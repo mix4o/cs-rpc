@@ -41,6 +41,7 @@ cs-rpc の通信は目的の異なる2系統に分かれる。
 | `sys.info` | なし | 下記参照 | ✓ | ✓ | ✓ | **実行した側**の情報。サーバ実行とワーカ実行で内容が異なる |
 | `demo.sleep` | `{seconds: number}` | `{slept: number}` | ― | ✓ | ― | 指定秒スリープ（最大10s）。running 可視化用。`ctx` で中断可 |
 | `find` | `{path, name, maxResults}` | 下記参照 | ― | ✓ | ✓ | パス配下を走査。**長時間・進捗・キャンセル対応**（4章） |
+| `exec` | `{program, args?, wait?}` | 下記参照 | ― | ✓ | ― | **外部プログラム実行**。allowlist 必須・既定無効（2.4・⚠️セキュリティ） |
 
 - 「サーバ」= サーバ側 Python ハンドラに登録済み（`run-now`/`step`/autorun で実行される）。
 - 「ワーカ」= Go クライアントの `worker` がローカル実行できる（enqueue → lease で実行）。
@@ -78,7 +79,42 @@ result:
 - `scanned`: 走査したエントリ数、`matched`: 一致数、`truncated`: 上限で打ち切ったか。
 - 読めないエントリ（権限エラー等）はスキップして続行する。
 
-### 2.4 エラー
+### 2.4 `exec`（外部プログラム実行）
+クライアント上で外部プログラム/OSコマンドを実行する。`calc.exe` の起動や、`dir` の
+出力回収などに使う。
+
+リクエスト params:
+```json
+{ "program": "calc.exe", "args": [], "wait": false }
+```
+| フィールド | 型 | 既定 | 意味 |
+| --- | --- | --- | --- |
+| `program` | string | （必須） | 実行するプログラム名/パス |
+| `args` | string[] | `[]` | 引数 |
+| `wait` | bool | `false` | `false`=起動して即完了（突き放し）/ `true`=完了まで待ち出力を回収 |
+
+result（`wait=false`／起動のみ）:
+```json
+{ "started": true, "pid": 12345, "program": "calc.exe" }
+```
+result（`wait=true`／出力回収）:
+```json
+{ "exitCode": 0, "stdout": "…", "stderr": "" }
+```
+- `wait=true` は `ctx` に紐づくため、コントロールページの「中断」でプロセスを止められる。
+- 出力は最大 64KB で打ち切り（`…(truncated)`）。
+
+> ### ⚠️ セキュリティ（exec）
+> `exec` は実質**リモートコード実行**である。無制限だと、サーバの enqueue を叩ける者が
+> 各クライアントで任意コマンドを実行できてしまう。そのため:
+> - **既定は無効**。実行側（ワーカ）の環境変数 **`CSRPC_EXEC_ALLOW`**（カンマ区切り）に
+>   許可プログラム名を列挙したときだけ、その中のものだけ実行できる。
+>   例: `CSRPC_EXEC_ALLOW=calc,notepad`（比較はベース名・小文字・`.exe` 除去で正規化）。
+> - 未設定なら `error 1003`（disabled）、allowlist 外なら `error 1002`（not allowed）。
+> - 制限は**実行するクライアント側で強制**される（サーバ/操作者は上書きできない）。
+> - 信頼できるネットワーク限定で使うこと。外部公開の可能性があるなら認証を先に入れる。
+
+### 2.5 エラー
 `result` の代わりに `error`（JSON-RPC 準拠）で返す。コード体系は
 [00_overview.md 3.4](00_overview.md) と一致。
 
@@ -88,6 +124,9 @@ result:
 | `-32602` | パラメータ不正 |
 | `-32603` | 内部エラー |
 | `1001` | （`math.div`）ゼロ除算 |
+| `1002` | （`exec`）allowlist 外のプログラム |
+| `1003` | （`exec`）allowlist 未設定で無効 |
+| `1004` | （`exec`）起動/実行失敗 |
 
 ---
 

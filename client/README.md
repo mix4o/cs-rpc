@@ -101,9 +101,25 @@ CGO_ENABLED=1 go build -tags webview -o csrpc ./cmd/csrpc
 | `--open` | `true` | 既定ブラウザで GUI を開く |
 
 ローカル実行できるコマンド: `echo` / `math.add` / `math.div` / `sys.info` / `sys.time` /
-`demo.sleep`（running 状態を見せるデモ用）/ `find`。追加は `internal/worker/handlers.go`。
-ワーカは起動時に自分の対応メソッドをサーバへ申告するので、コントロールページの
-メソッド選択に自動で現れる。
+`demo.sleep`（running 状態を見せるデモ用）/ `find` / `exec`。追加は
+`internal/worker/handlers.go`。ワーカは起動時に自分の対応メソッドをサーバへ申告するので、
+コントロールページのメソッド選択に自動で現れる。
+
+### exec（外部プログラム実行）と allowlist ⚠️
+`exec`（`{program, args?, wait?}`）はクライアント上でプログラムを実行する。`wait:false` は
+起動して即完了（`calc.exe` 等）、`wait:true` は完了まで待ち stdout/終了コードを返す。
+
+これは実質リモートコード実行なので、**既定では無効**。実行するには**ワーカ側の環境変数
+`CSRPC_EXEC_ALLOW`** に許可プログラム名を列挙する（そこにあるものだけ実行可）:
+
+```powershell
+# Windows (PowerShell): calc と notepad だけ許可して worker 起動
+$env:CSRPC_EXEC_ALLOW = "calc,notepad"
+$env:CSRPC_ENDPOINT   = "http://192.168.1.180:8080/rpc"
+.\csrpc-native.exe worker --name win-pc
+```
+未設定なら `exec` は `error 1003`（無効）、allowlist 外は `error 1002`（不許可）で拒否される。
+信頼できるネットワーク限定で使うこと。
 
 ### 長時間コマンド（find）と進捗・キャンセル
 `find`（params 例: `{"path":"/etc","name":"*.conf"}`）は時間がかかり得るため、

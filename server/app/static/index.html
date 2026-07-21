@@ -99,6 +99,7 @@ let lastMethodsKey = "";
 
 const PARAM_HINTS = {
   find: '例: {"path":"/etc","name":"*.conf"}  ← path配下をnameグロブで検索（長時間になり得る）',
+  exec: '例: {"program":"calc.exe","wait":false}（起動のみ）/ {"program":"cmd","args":["/c","dir"],"wait":true}（出力回収）。要 CSRPC_EXEC_ALLOW',
   "demo.sleep": '例: {"seconds": 5}',
   echo: '例: {"message":"hi"}',
   "math.add": '例: {"a":2,"b":3}',

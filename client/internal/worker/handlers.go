@@ -1,12 +1,15 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -35,6 +38,7 @@ var localHandlers = map[string]Handler{
 	"sys.time":   hSysTime,
 	"demo.sleep": hSleep,
 	"find":       hFind,
+	"exec":       hExec,
 }
 
 func Methods() []string {
@@ -194,4 +198,106 @@ func hFind(ctx context.Context, params json.RawMessage, emit Emit) (any, *Handle
 		return nil, &HandlerError{Code: -32603, Message: "find failed: " + walkErr.Error()}
 	}
 	return result, nil
+}
+
+// exec のドメインエラーコード
+const (
+	errExecNotAllowed = 1002 // allowlist 外
+	errExecDisabled   = 1003 // allowlist 未設定（無効）
+	errExecFailed     = 1004 // 起動/実行失敗
+)
+
+const execOutputCap = 64 * 1024 // 回収する出力の上限（バイト）
+
+// execAllowlist は環境変数 CSRPC_EXEC_ALLOW（カンマ区切り）から許可プログラム集合を
+// 作る。空なら空集合＝exec 無効。比較はベース名・小文字・.exe 除去で正規化する。
+func execAllowlist() map[string]bool {
+	m := map[string]bool{}
+	for _, p := range strings.Split(os.Getenv("CSRPC_EXEC_ALLOW"), ",") {
+		if strings.TrimSpace(p) == "" {
+			continue // 空トークンは無視（filepath.Base("") が "." になるのを防ぐ）
+		}
+		m[normalizeProg(p)] = true
+	}
+	return m
+}
+
+func normalizeProg(p string) string {
+	p = strings.ToLower(strings.TrimSpace(p))
+	p = filepath.Base(p)
+	return strings.TrimSuffix(p, ".exe")
+}
+
+func truncate(s string) string {
+	if len(s) > execOutputCap {
+		return s[:execOutputCap] + "…(truncated)"
+	}
+	return s
+}
+
+// hExec は外部プログラムを実行する。
+//
+// セキュリティ: これは実質リモートコード実行。既定では無効で、実行側（ワーカ）の
+// 環境変数 CSRPC_EXEC_ALLOW に許可プログラム名を列挙したときだけ、その中のものだけ
+// 実行できる。信頼できるネットワーク限定で使うこと。
+//
+// params: {program: string, args?: []string, wait?: bool}
+//   - wait=false（既定）: 起動して即完了（PID を返す。突き放し）。calc.exe 等の GUI 向け。
+//   - wait=true: 実行完了まで待ち、stdout/stderr/終了コードを返す。ctx で中断・タイムアウト可。
+func hExec(ctx context.Context, params json.RawMessage, _ Emit) (any, *HandlerError) {
+	p, herr := decode[struct {
+		Program string   `json:"program"`
+		Args    []string `json:"args"`
+		Wait    bool     `json:"wait"`
+	}](params)
+	if herr != nil {
+		return nil, herr
+	}
+	if p.Program == "" {
+		return nil, &HandlerError{Code: -32602, Message: "program is required"}
+	}
+
+	allow := execAllowlist()
+	if len(allow) == 0 {
+		return nil, &HandlerError{Code: errExecDisabled,
+			Message: "exec is disabled: set CSRPC_EXEC_ALLOW to enable"}
+	}
+	if !allow[normalizeProg(p.Program)] {
+		return nil, &HandlerError{Code: errExecNotAllowed,
+			Message: "program not allowed: " + p.Program}
+	}
+
+	if !p.Wait {
+		// 突き放し: 起動して親から切り離し、完了を待たない。
+		cmd := exec.Command(p.Program, p.Args...)
+		if err := cmd.Start(); err != nil {
+			return nil, &HandlerError{Code: errExecFailed, Message: "start failed: " + err.Error()}
+		}
+		pid := cmd.Process.Pid
+		_ = cmd.Process.Release()
+		return map[string]any{"started": true, "pid": pid, "program": p.Program}, nil
+	}
+
+	// 出力回収: ctx に紐付けて実行（キャンセル/タイムアウトでプロセスを止められる）。
+	cmd := exec.CommandContext(ctx, p.Program, p.Args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	exitCode := 0
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, &HandlerError{Canceled: true, Message: "canceled",
+				Data: map[string]any{"stdout": truncate(stdout.String()), "stderr": truncate(stderr.String())}}
+		}
+		if ee, ok := err.(*exec.ExitError); ok {
+			exitCode = ee.ExitCode()
+		} else {
+			return nil, &HandlerError{Code: errExecFailed, Message: "run failed: " + err.Error()}
+		}
+	}
+	return map[string]any{
+		"exitCode": exitCode,
+		"stdout":   truncate(stdout.String()),
+		"stderr":   truncate(stderr.String()),
+	}, nil
 }

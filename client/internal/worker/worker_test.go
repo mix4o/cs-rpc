@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -46,6 +47,37 @@ func TestFindMatches(t *testing.T) {
 	m := out.(map[string]any)
 	if m["matched"].(int) != 2 {
 		t.Fatalf("expected 2 matches, got %v", m["matched"])
+	}
+}
+
+func TestExecDisabledWithoutAllowlist(t *testing.T) {
+	t.Setenv("CSRPC_EXEC_ALLOW", "")
+	params, _ := json.Marshal(map[string]any{"program": "echo", "wait": true})
+	_, herr := hExec(context.Background(), params, noEmit)
+	if herr == nil || herr.Code != errExecDisabled {
+		t.Fatalf("expected disabled(%d), got %v", errExecDisabled, herr)
+	}
+}
+
+func TestExecNotAllowed(t *testing.T) {
+	t.Setenv("CSRPC_EXEC_ALLOW", "calc,notepad")
+	params, _ := json.Marshal(map[string]any{"program": "echo", "wait": true})
+	_, herr := hExec(context.Background(), params, noEmit)
+	if herr == nil || herr.Code != errExecNotAllowed {
+		t.Fatalf("expected not-allowed(%d), got %v", errExecNotAllowed, herr)
+	}
+}
+
+func TestExecWaitCapturesOutput(t *testing.T) {
+	t.Setenv("CSRPC_EXEC_ALLOW", "echo")
+	params, _ := json.Marshal(map[string]any{"program": "echo", "args": []string{"hello"}, "wait": true})
+	out, herr := hExec(context.Background(), params, noEmit)
+	if herr != nil {
+		t.Fatalf("exec error: %v", herr)
+	}
+	m := out.(map[string]any)
+	if m["exitCode"].(int) != 0 || !strings.Contains(m["stdout"].(string), "hello") {
+		t.Fatalf("unexpected result: %v", m)
 	}
 }
 
