@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cs-rpc worker</title>
+<style>
+  /* クライアントは teal 系アクセント（サーバの青と見分けやすくする） */
+  :root { --bg:#0e1a17; --panel:#12211d; --panel2:#16271f; --line:#254036; --fg:#e6f5ee;
+          --muted:#84a99a; --accent:#22c39a; --ok:#3fb950; --err:#f85149; --warn:#d29922; }
+  * { box-sizing:border-box; }
+  html,body { height:100%; margin:0; }
+  body { display:flex; flex-direction:column; background:var(--bg); color:var(--fg);
+         font-family: system-ui,"Segoe UI","Hiragino Kaku Gothic ProN",Meiryo,sans-serif; font-size:13px; }
+  /* 上部に太いカラーバンド＝「これはクライアント」の視認性 */
+  body { border-top:4px solid var(--accent); }
+  header { padding:10px 16px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:15px; margin:0; }
+  .chip { background:var(--accent); color:#04120d; font-weight:800; letter-spacing:.06em;
+          padding:3px 10px; border-radius:6px; font-size:12px; }
+  .muted { color:var(--muted); }
+  .dot { width:9px; height:9px; border-radius:50%; display:inline-block; background:var(--muted); }
+  .grid { flex:1; display:grid; grid-template-columns:1fr 1fr; gap:0; min-height:0; }
+  .col { display:flex; flex-direction:column; min-height:0; border-right:1px solid var(--line); }
+  .col:last-child { border-right:0; }
+  .col h2 { font-size:12px; margin:0; padding:8px 14px; color:var(--muted); border-bottom:1px solid var(--line);
+            text-transform:uppercase; letter-spacing:.04em; display:flex; justify-content:space-between; }
+  .feed { flex:1; overflow-y:auto; padding:10px 12px; }
+  .feed::-webkit-scrollbar { width:12px; }
+  .feed::-webkit-scrollbar-thumb { background:#2b3650; border-radius:6px; }
+  /* 左: コマンドカード */
+  .card { background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:9px 11px; margin-bottom:8px; }
+  .card.flash { animation: flash .8s; }
+  @keyframes flash { from { border-color:var(--accent); } to { border-color:var(--line); } }
+  .card .top { display:flex; align-items:center; gap:8px; }
+  .seq { color:var(--muted); font-size:11px; }
+  code,pre { font-family: ui-monospace,Menlo,Consolas,monospace; }
+  pre { margin:6px 0 0; white-space:pre-wrap; word-break:break-word; }
+  .kv { color:var(--muted); font-size:11px; margin-top:4px; }
+  .badge { padding:1px 7px; border-radius:20px; font-size:11px; font-weight:600; }
+  .s-running { background:#3a2f10; color:var(--warn); }
+  .s-done    { background:#12331d; color:var(--ok); }
+  .s-error   { background:#3a1414; color:var(--err); }
+  .res-ok  { color:#a9e6bb; }
+  .res-err { color:#f0a4a0; }
+  /* 右: ログ行 */
+  .logline { display:flex; gap:8px; padding:1px 0; font-family: ui-monospace,Menlo,Consolas,monospace; }
+  .logline .t { color:var(--muted); }
+  .lv-info  { color:var(--fg); }
+  .lv-debug { color:var(--muted); }
+  .lv-warn  { color:var(--warn); }
+  .lv-error { color:var(--err); }
+  .newbtn { position:absolute; right:20px; bottom:14px; background:var(--accent); color:#fff;
+            border:0; border-radius:16px; padding:5px 12px; font-size:12px; cursor:pointer; display:none; }
+  .wrap { position:relative; flex:1; display:flex; flex-direction:column; min-height:0; }
+</style>
+</head>
+<body>
+<header>
+  <span class="chip">CLIENT</span>
+  <h1>cs-rpc <span class="muted">worker</span></h1>
+  <span class="muted" id="meta"></span>
+  <span style="margin-left:auto" class="muted">サーバ接続:</span>
+  <span id="conn" class="dot" title="disconnected"></span>
+  <span class="muted" id="counts"></span>
+</header>
+
+<div class="grid">
+  <section class="col">
+    <h2><span>サーバから受領したコマンドと結果</span><span id="cmdCount" class="muted"></span></h2>
+    <div class="wrap">
+      <div class="feed" id="cmdFeed"></div>
+      <button class="newbtn" id="cmdNew" onclick="toBottom('cmdFeed')">↓ new</button>
+    </div>
+  </section>
+  <section class="col">
+    <h2><span>クライアント処理ログ (debug)</span><span id="logCount" class="muted"></span></h2>
+    <div class="wrap">
+      <div class="feed" id="logFeed"></div>
+      <button class="newbtn" id="logNew" onclick="toBottom('logFeed')">↓ new</button>
+    </div>
+  </section>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const cardById = new Map();
+let nCmd = 0, nLog = 0;
+
+function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function pretty(v){ if(v===undefined||v===null||v==="") return ""; try{ return JSON.stringify(JSON.parse(v)); }catch(_){ return String(v); } }
+
+function atBottom(el){ return el.scrollHeight - el.scrollTop - el.clientHeight < 40; }
+function toBottom(id){ const el=$(id); el.scrollTop = el.scrollHeight; hideNew(id); }
+function hideNew(id){ $(id==='cmdFeed'?'cmdNew':'logNew').style.display='none'; }
+function showNew(id){ $(id==='cmdFeed'?'cmdNew':'logNew').style.display='block'; }
+
+// 追記前に「最下部にいたか」を見て、いたら自動追従。上に遡っていれば追従せず new ボタン表示。
+function appendKeepingScroll(feedId, el, node){
+  const stick = atBottom(el);
+  el.appendChild(node);
+  if (stick) { el.scrollTop = el.scrollHeight; hideNew(feedId); }
+  else showNew(feedId);
+}
+
+function stateBadge(s){ return `<span class="badge s-${s}">${s}</span>`; }
+
+function renderCard(ev){
+  let card = cardById.get(ev.id);
+  const isNew = !card;
+  if (isNew){
+    card = document.createElement('div');
+    card.className = 'card flash';
+    cardById.set(ev.id, card);
+    nCmd++;
+  }
+  let resHtml = '';
+  if (ev.state === 'done')  resHtml = `<pre class="res-ok">→ ${esc(pretty(ev.result))}</pre>`;
+  else if (ev.state === 'error') resHtml = `<pre class="res-err">✗ ${esc(ev.error||'')}</pre>`;
+  const timing = ev.doneAt ? `${ev.receivedAt} → ${ev.doneAt} (${ev.elapsedMs}ms)` : `${ev.receivedAt} …`;
+  card.innerHTML =
+    `<div class="top"><span class="seq">#${ev.seq}</span>`+
+    `<code>${esc(ev.method)}</code>${stateBadge(ev.state)}</div>`+
+    (ev.params ? `<div class="kv">params: <code>${esc(pretty(ev.params))}</code></div>` : '')+
+    resHtml +
+    `<div class="kv">${timing}</div>`;
+  if (isNew) appendKeepingScroll('cmdFeed', $('cmdFeed'), card);
+  $('cmdCount').textContent = nCmd + ' cmds';
+}
+
+function renderLog(le){
+  const div = document.createElement('div');
+  div.className = 'logline';
+  div.innerHTML = `<span class="t">${le.ts}</span><span class="lv-${le.level}">[${le.level}] ${esc(le.msg)}</span>`;
+  appendKeepingScroll('logFeed', $('logFeed'), div);
+  nLog++;
+  $('logCount').textContent = nLog + ' lines';
+}
+
+$('cmdFeed').addEventListener('scroll', e => { if (atBottom(e.target)) hideNew('cmdFeed'); });
+$('logFeed').addEventListener('scroll', e => { if (atBottom(e.target)) hideNew('logFeed'); });
+
+// ワーカ名・接続先をヘッダとタブ/ウィンドウタイトルへ反映（別インスタンスの識別用）
+fetch('/meta').then(r => r.json()).then(m => {
+  $('meta').textContent = `worker: ${m.worker}　→　server: ${m.server}`;
+  document.title = `cs-rpc CLIENT — ${m.worker}`;
+}).catch(() => {});
+
+function connect(){
+  const es = new EventSource('/events');
+  es.onopen = () => { $('conn').style.background = 'var(--ok)'; $('conn').title='connected'; };
+  es.onerror = () => { $('conn').style.background = 'var(--err)'; $('conn').title='reconnecting…'; };
+  es.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'snapshot'){
+      $('cmdFeed').innerHTML=''; $('logFeed').innerHTML=''; cardById.clear(); nCmd=0; nLog=0;
+      (m.data.commands||[]).forEach(renderCard);
+      (m.data.logs||[]).forEach(renderLog);
+      toBottom('cmdFeed'); toBottom('logFeed');
+    } else if (m.type === 'command') renderCard(m.data);
+    else if (m.type === 'log') renderLog(m.data);
+  };
+}
+connect();
+</script>
+</body>
+</html>

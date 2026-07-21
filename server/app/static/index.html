@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cs-rpc control</title>
+<style>
+  :root { --bg:#0f1420; --panel:#1a2233; --line:#2b3650; --fg:#e6ebf5; --muted:#8a97b1;
+          --accent:#4f8cff; --ok:#3fb950; --err:#f85149; --warn:#d29922; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, "Segoe UI", "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
+         background:var(--bg); color:var(--fg); font-size:14px; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:16px; }
+  header h1 { font-size:16px; margin:0; }
+  .muted { color:var(--muted); }
+  main { display:grid; grid-template-columns: 380px 1fr; gap:16px; padding:16px 20px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .panel h2 { font-size:13px; margin:0 0 10px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  label { display:block; margin:8px 0 4px; color:var(--muted); font-size:12px; }
+  select, textarea, input { width:100%; background:#0d1220; color:var(--fg); border:1px solid var(--line);
+           border-radius:6px; padding:8px; font-family:inherit; font-size:13px; }
+  textarea { min-height:80px; font-family: ui-monospace, Menlo, Consolas, monospace; resize:vertical; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:6px; padding:8px 12px;
+           cursor:pointer; font-size:13px; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--fg); }
+  button.small { padding:3px 8px; font-size:12px; }
+  button:hover { filter:brightness(1.1); }
+  .toggle { display:inline-flex; align-items:center; gap:8px; }
+  .dot { width:9px; height:9px; border-radius:50%; display:inline-block; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:12px; }
+  code, pre { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  pre { margin:0; white-space:pre-wrap; word-break:break-word; }
+  .badge { padding:1px 7px; border-radius:20px; font-size:11px; font-weight:600; }
+  .s-queued  { background:#22304d; color:#9db4e6; }
+  .s-running { background:#3a2f10; color:var(--warn); }
+  .s-done    { background:#12331d; color:var(--ok); }
+  .s-error   { background:#3a1414; color:var(--err); }
+  .s-canceled{ background:#2a2f3a; color:var(--muted); }
+  .empty { color:var(--muted); padding:8px; }
+  .hint { font-size:11px; color:var(--muted); margin-top:4px; }
+  .flash { transition: background .6s; }
+</style>
+</head>
+<body>
+<header>
+  <h1>cs-rpc <span class="muted">control</span></h1>
+  <span class="toggle">autorun:
+    <span id="autorunDot" class="dot"></span>
+    <button id="autorunBtn" class="ghost small">toggle</button>
+  </span>
+  <button id="stepBtn" class="ghost small">step once ▶</button>
+  <span class="muted" id="tickInfo"></span>
+  <span class="muted" style="margin-left:auto" id="clock"></span>
+</header>
+
+<main>
+  <!-- 左: コマンド挿入 -->
+  <section class="panel">
+    <h2>次に実行するコマンドを挿入</h2>
+    <label>method</label>
+    <select id="method"></select>
+    <label>params (JSON)</label>
+    <textarea id="params" spellcheck="false" placeholder='{"message":"hello"}'></textarea>
+    <div class="hint" id="paramsHint"></div>
+    <div class="row">
+      <button id="enqueueBtn">キューに挿入 (enqueue)</button>
+      <button id="runNowBtn" class="ghost">即時実行 (run now)</button>
+    </div>
+    <div class="hint" id="runNowResult"></div>
+  </section>
+
+  <!-- 右: キューと履歴 -->
+  <section style="display:flex; flex-direction:column; gap:16px;">
+    <div class="panel">
+      <h2>保留キュー（次に実行される順）</h2>
+      <table>
+        <thead><tr><th>#</th><th>method</th><th>params</th><th>state</th><th></th></tr></thead>
+        <tbody id="queueBody"></tbody>
+      </table>
+    </div>
+    <div class="panel">
+      <h2 style="display:flex; justify-content:space-between; align-items:center;">
+        実行履歴 <button id="clearBtn" class="ghost small">clear</button>
+      </h2>
+      <table>
+        <thead><tr><th>#</th><th>method</th><th>state</th><th>result / error</th><th>by</th></tr></thead>
+        <tbody id="historyBody"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let methodsLoaded = false;
+
+async function api(path, body) {
+  const opt = { method: "POST", headers: {"Content-Type":"application/json"} };
+  if (body !== undefined) opt.body = JSON.stringify(body);
+  const r = await fetch(path, body !== undefined ? opt : undefined);
+  return r;
+}
+
+function parseParams() {
+  const raw = $("params").value.trim();
+  if (raw === "") return null;
+  return JSON.parse(raw); // 失敗時は例外 → 呼び出し側で捕捉
+}
+
+function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function short(v) { const s = JSON.stringify(v); return s === undefined ? "" : s; }
+
+async function enqueue() {
+  let params;
+  try { params = parseParams(); } catch (e) { return note("runNowResult", "params が不正な JSON です", true); }
+  const r = await api("/control/enqueue", { method: $("method").value, params });
+  if (!r.ok) { const d = await r.json().catch(()=>({})); return note("runNowResult", d.detail || "enqueue 失敗", true); }
+  note("runNowResult", "挿入しました", false);
+  refresh();
+}
+
+async function runNow() {
+  let params;
+  try { params = parseParams(); } catch (e) { return note("runNowResult", "params が不正な JSON です", true); }
+  const r = await api("/control/run-now", { method: $("method").value, params });
+  const d = await r.json();
+  if (d.ok) note("runNowResult", "result: " + short(d.result), false);
+  else note("runNowResult", "error " + d.error.code + ": " + d.error.message, true);
+}
+
+function note(id, msg, isErr) {
+  const el = $(id); el.textContent = msg; el.style.color = isErr ? "var(--err)" : "var(--ok)";
+}
+
+async function toggleAutorun() {
+  const cur = $("autorunDot").dataset.on === "1";
+  await api("/control/autorun", { enabled: !cur });
+  refresh();
+}
+
+async function step() { await api("/control/step"); refresh(); }
+async function cancel(id) { await api("/control/cancel", { id }); refresh(); }
+async function clearHistory() { await api("/control/clear"); refresh(); }
+
+function stateBadge(s) { return `<span class="badge s-${s}">${s}</span>`; }
+
+function renderQueue(pending) {
+  const tb = $("queueBody");
+  if (pending.length === 0) { tb.innerHTML = `<tr><td colspan="5" class="empty">（空）</td></tr>`; return; }
+  tb.innerHTML = pending.map(j => `
+    <tr><td>${j.seq}</td><td><code>${esc(j.method)}</code></td>
+    <td><code>${esc(short(j.params) ?? "")}</code></td>
+    <td>${stateBadge(j.state)}</td>
+    <td><button class="ghost small" onclick="cancel('${j.id}')">cancel</button></td></tr>`).join("");
+}
+
+function renderHistory(running, history) {
+  const rows = [];
+  for (const j of running) rows.push(histRow(j));
+  for (const j of history) rows.push(histRow(j));
+  const tb = $("historyBody");
+  tb.innerHTML = rows.length ? rows.join("")
+    : `<tr><td colspan="5" class="empty">（まだありません）</td></tr>`;
+}
+
+function histRow(j) {
+  let detail = "";
+  if (j.state === "error" && j.error) detail = `error ${j.error.code}: ${esc(j.error.message)}`;
+  else if (j.state === "done") detail = esc(short(j.result) ?? "");
+  else if (j.state === "running") detail = "…";
+  return `<tr><td>${j.seq}</td><td><code>${esc(j.method)}</code></td>
+    <td>${stateBadge(j.state)}</td><td><pre>${detail}</pre></td>
+    <td class="muted">${esc(j.worker || j.source || "")}</td></tr>`;
+}
+
+async function refresh() {
+  let s;
+  try { s = await (await fetch("/control/state")).json(); } catch (e) { return; }
+  // methods dropdown（初回のみ）
+  if (!methodsLoaded && s.methods.length) {
+    $("method").innerHTML = s.methods.map(m => `<option>${esc(m)}</option>`).join("");
+    methodsLoaded = true;
+  }
+  const dot = $("autorunDot");
+  dot.dataset.on = s.autorun ? "1" : "0";
+  dot.style.background = s.autorun ? "var(--ok)" : "var(--muted)";
+  $("tickInfo").textContent = s.autorun ? `(自動実行 ${s.tick}s 間隔)` : "(停止中: step / 外部ワーカで実行)";
+  renderQueue(s.pending);
+  renderHistory(s.running, s.history);
+}
+
+$("enqueueBtn").onclick = enqueue;
+$("runNowBtn").onclick = runNow;
+$("autorunBtn").onclick = toggleAutorun;
+$("stepBtn").onclick = step;
+$("clearBtn").onclick = clearHistory;
+setInterval(() => { $("clock").textContent = new Date().toLocaleTimeString(); }, 1000);
+setInterval(refresh, 1000);
+refresh();
+</script>
+</body>
+</html>

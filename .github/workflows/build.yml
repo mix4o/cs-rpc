@@ -1,0 +1,81 @@
+# GitHub Actions ワークフロー。
+# コードを push すると GitHub 上のマシンで自動的に実行される。
+#   - windows-client: Windows 版クライアント exe をビルドして成果物(artifacts)にする
+#       * csrpc.exe        … 既定ビルド（GUI はブラウザ表示・CGO不要で確実）
+#       * csrpc-native.exe … ネイティブウィンドウ版（-tags webview・CGO）
+#   - checks: 参考として Go/Python のテストを Linux 上で実行
+#
+# 成果物は Actions の実行結果ページ下部「Artifacts」からダウンロードできる。
+name: build
+
+on:
+  push:
+  workflow_dispatch:   # 手動実行ボタンも有効化
+
+jobs:
+  windows-client:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Show toolchain
+        run: |
+          go version
+          gcc --version
+
+      # 既定ビルド（ブラウザGUI・CGO不要）。まず確実に動くexeを用意する。
+      - name: Build default exe (browser GUI)
+        env:
+          CGO_ENABLED: "0"
+        run: go build -o csrpc.exe ./cmd/csrpc
+
+      # ネイティブウィンドウ版（webview）。Windows runner の mingw gcc + WebView2 を使う。
+      # 初回は環境差でコケることがあるため continue-on-error にして、失敗しても
+      # 既定exeは配布できるようにしておく（ログで原因を確認して調整する）。
+      - name: Build native window exe (-tags webview)
+        continue-on-error: true
+        env:
+          CGO_ENABLED: "1"
+        run: go build -tags webview -ldflags "-H=windowsgui" -o csrpc-native.exe ./cmd/csrpc
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: csrpc-windows
+          path: |
+            client/csrpc.exe
+            client/csrpc-native.exe
+          if-no-files-found: warn
+
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Go vet & test
+        working-directory: client
+        run: |
+          go vet ./...
+          go test ./...
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Python tests
+        working-directory: server
+        run: |
+          pip install -e ".[dev]"
+          pytest -q

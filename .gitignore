@@ -1,0 +1,19 @@
+# --- Go ---
+/client/csrpc
+/client/csrpc.exe
+/client/csrpc-native.exe
+*.test
+*.out
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# --- editor / OS ---
+.DS_Store
+.idea/
+.vscode/
