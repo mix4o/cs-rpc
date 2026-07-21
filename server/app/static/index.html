@@ -43,6 +43,8 @@
   .hint { font-size:11px; color:var(--muted); margin-top:4px; }
   .flash { transition: background .6s; }
   .rowbtns { margin-top:4px; display:flex; gap:6px; }
+  .seg { display:inline-flex; gap:4px; margin-left:8px; }
+  .seg .on { background:var(--accent); color:#fff; }
   /* レスポンスのコピー用 詳細ドロワー */
   .detail { position:fixed; left:0; right:0; bottom:0; background:var(--panel);
             border-top:1px solid var(--line); box-shadow:0 -6px 20px rgba(0,0,0,.45);
@@ -107,8 +109,12 @@
   <div class="detail-head">
     <strong>レスポンス</strong>
     <span id="detailTitle" class="muted"></span>
+    <span class="seg">
+      <button id="viewText" class="ghost small on">テキスト</button>
+      <button id="viewJson" class="ghost small">JSON</button>
+    </span>
     <span style="margin-left:auto"></span>
-    <button id="detailCopy" class="ghost small">📋 コピー</button>
+    <button id="detailCopy" class="ghost small">📋 表示中をコピー</button>
     <button id="detailClose" class="ghost small">閉じる</button>
   </div>
   <textarea id="detailText" readonly spellcheck="false"></textarea>
@@ -119,11 +125,42 @@ const $ = (id) => document.getElementById(id);
 let lastMethodsKey = "";
 let jobsById = {};
 
-// レスポンス（result か error）を整形した文字列にする。
+// 改行正規化（CRLF/CR → LF）。コピペで1行に潰れないようにする。
+function nl(s) { return String(s).replace(/\r\n/g, "\n").replace(/\r/g, "\n"); }
+
+// 値を読みやすいテキストに整形する。文字列は JSON エスケープせず実改行のまま
+// （stdout 等が \r\n で1行に潰れるのを防ぐ）。配列は1行1件。
+function toReadable(v, ind) {
+  ind = ind || "";
+  if (v === null || v === undefined) return "null";
+  if (typeof v === "string") {
+    const s = nl(v);
+    if (!s.includes("\n")) return s;
+    return "\n" + s.split("\n").map(line => ind + "  " + line).join("\n");
+  }
+  if (typeof v !== "object") return String(v);
+  if (Array.isArray(v)) {
+    if (v.length === 0) return "[]";
+    return "\n" + v.map(x => {
+      const r = toReadable(x, ind + "  ");
+      return ind + "  - " + (r[0] === "\n" ? r.slice(1) : r);
+    }).join("\n");
+  }
+  const keys = Object.keys(v);
+  if (keys.length === 0) return "{}";
+  return keys.map(k => {
+    const r = toReadable(v[k], ind);
+    return ind + k + ":" + (r[0] === "\n" ? r : " " + r);
+  }).join("\n");
+}
+
+// レスポンス（result か error）を、改行を保った読みやすい文字列にする。
 function responseString(j) {
   const payload = (j.result !== undefined && j.result !== null) ? j.result
                 : (j.error != null ? j.error : null);
-  try { return JSON.stringify(payload, null, 2); } catch (_) { return String(payload); }
+  if (payload === null || payload === undefined) return "";
+  if (typeof payload === "string") return nl(payload);
+  return toReadable(payload);
 }
 
 // クリップボードへコピー。非HTTPS/LAN では Clipboard API が使えないため
@@ -142,18 +179,42 @@ async function copyText(text) {
   } catch (_) { return false; }
 }
 
-async function copyResult(id, btn) {
-  const j = jobsById[id]; if (!j) return;
-  const ok = await copyText(responseString(j));
-  if (btn) { const o = btn.textContent; btn.textContent = ok ? "✓ copied" : "× 失敗"; setTimeout(() => btn.textContent = o, 900); }
+// 正規の JSON 文字列（機械処理・貼り付け用。改行はエスケープされる）。
+function responseJSON(j) {
+  const payload = (j.result !== undefined && j.result !== null) ? j.result
+                : (j.error != null ? j.error : null);
+  try { return JSON.stringify(payload, null, 2); } catch (_) { return String(payload); }
 }
 
+function flashBtn(btn, ok) {
+  if (!btn) return;
+  const o = btn.textContent; btn.textContent = ok ? "✓ copied" : "× 失敗";
+  setTimeout(() => btn.textContent = o, 900);
+}
+
+// kind: "text"（読みやすい・実改行）/ "json"（正規JSON）
+async function copyResult(id, kind, btn) {
+  const j = jobsById[id]; if (!j) return;
+  const text = kind === "json" ? responseJSON(j) : responseString(j);
+  flashBtn(btn, await copyText(text));
+}
+
+let detailJobId = null;
+let detailView = "text";
+function renderDetail() {
+  const j = jobsById[detailJobId]; if (!j) return;
+  $("detailText").value = detailView === "json" ? responseJSON(j) : responseString(j);
+  $("viewText").classList.toggle("on", detailView === "text");
+  $("viewJson").classList.toggle("on", detailView === "json");
+}
+function setDetailView(v) { detailView = v; renderDetail(); }
 function showDetail(id) {
   const j = jobsById[id]; if (!j) return;
+  detailJobId = id;
   $("detailTitle").textContent = `#${j.seq} ${j.method} [${j.state}]`;
-  $("detailText").value = responseString(j);
+  renderDetail();
   $("detailPanel").style.display = "flex";
-  $("detailText").focus(); $("detailText").select();
+  $("detailText").focus();
 }
 function closeDetail() { $("detailPanel").style.display = "none"; }
 
@@ -259,7 +320,8 @@ function histRow(j) {
   let rowbtns = "";
   if (j.state === "done" || j.state === "error" || j.state === "canceled") {
     rowbtns = `<div class="rowbtns">`
-      + `<button class="ghost small" onclick="copyResult('${j.id}', this)">📋 copy</button>`
+      + `<button class="ghost small" onclick="copyResult('${j.id}','text',this)">📋 text</button>`
+      + `<button class="ghost small" onclick="copyResult('${j.id}','json',this)">📋 JSON</button>`
       + `<button class="ghost small" onclick="showDetail('${j.id}')">詳細</button></div>`;
   }
   return `<tr><td>${j.seq}</td><td><code>${esc(j.method)}</code></td>
@@ -297,11 +359,9 @@ $("stepBtn").onclick = step;
 $("clearBtn").onclick = clearHistory;
 $("method").addEventListener("change", updateHint);
 $("detailClose").onclick = closeDetail;
-$("detailCopy").onclick = async (e) => {
-  const ok = await copyText($("detailText").value);
-  const b = e.target; const o = b.textContent; b.textContent = ok ? "✓ copied" : "× 失敗";
-  setTimeout(() => b.textContent = o, 900);
-};
+$("viewText").onclick = () => setDetailView("text");
+$("viewJson").onclick = () => setDetailView("json");
+$("detailCopy").onclick = async (e) => flashBtn(e.target, await copyText($("detailText").value));
 setInterval(() => { $("clock").textContent = new Date().toLocaleTimeString(); }, 1000);
 setInterval(refresh, 1000);
 refresh();
