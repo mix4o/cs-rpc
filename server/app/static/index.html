@@ -42,7 +42,12 @@
   .empty { color:var(--muted); padding:8px; }
   .hint { font-size:11px; color:var(--muted); margin-top:4px; }
   .flash { transition: background .6s; }
-  .rowbtns { margin-top:4px; display:flex; gap:6px; }
+  .rowbtns { margin-top:4px; display:flex; gap:6px; flex-wrap:wrap; }
+  /* 1履歴の結果表示: 既定は最大高さで折りたたみ、展開可能 */
+  .rbox { max-height:7.5em; overflow:hidden; position:relative; }
+  .rbox.expanded { max-height:none; }
+  .rbox.overflowing::after { content:""; position:absolute; left:0; right:0; bottom:0;
+    height:1.8em; background:linear-gradient(transparent, var(--panel)); pointer-events:none; }
   .seg { display:inline-flex; gap:4px; margin-left:8px; }
   .seg .on { background:var(--accent); color:#fff; }
   /* レスポンスのコピー用 詳細ドロワー */
@@ -124,6 +129,7 @@
 const $ = (id) => document.getElementById(id);
 let lastMethodsKey = "";
 let jobsById = {};
+const expandedIds = new Set();
 
 // 改行正規化（CRLF/CR → LF）。コピペで1行に潰れないようにする。
 function nl(s) { return String(s).replace(/\r\n/g, "\n").replace(/\r/g, "\n"); }
@@ -296,6 +302,7 @@ function renderHistory(running, history) {
   const tb = $("historyBody");
   tb.innerHTML = rows.length ? rows.join("")
     : `<tr><td colspan="5" class="empty">（まだありません）</td></tr>`;
+  markOverflow();
 }
 
 function fmtProgress(p) {
@@ -316,17 +323,43 @@ function histRow(j) {
     // 実行中は中断ボタンを出す（キャンセル要求 → ワーカが停止）
     action = `<button class="ghost small" onclick="cancel('${j.id}')">中断</button>`;
   }
-  // 完了系（result/error あり）にはコピー/詳細ボタンを付ける
+  // 完了系（result/error あり）にはコピー/詳細/展開ボタンを付ける
   let rowbtns = "";
   if (j.state === "done" || j.state === "error" || j.state === "canceled") {
+    const exp = expandedIds.has(j.id);
     rowbtns = `<div class="rowbtns">`
+      + `<button class="ghost small" id="exp-${j.id}" style="display:none" onclick="toggleExpand('${j.id}',this)">${exp ? "▲ 折りたたむ" : "▼ 展開"}</button>`
       + `<button class="ghost small" onclick="copyResult('${j.id}','text',this)">📋 text</button>`
       + `<button class="ghost small" onclick="copyResult('${j.id}','json',this)">📋 JSON</button>`
       + `<button class="ghost small" onclick="showDetail('${j.id}')">詳細</button></div>`;
   }
+  const cls = "rbox" + (expandedIds.has(j.id) ? " expanded" : "");
   return `<tr><td>${j.seq}</td><td><code>${esc(j.method)}</code></td>
-    <td>${stateBadge(j.state)} ${action}</td><td><pre>${detail}</pre>${rowbtns}</td>
+    <td>${stateBadge(j.state)} ${action}</td>
+    <td><div class="${cls}" id="rbox-${j.id}" data-id="${j.id}"><pre>${detail}</pre></div>${rowbtns}</td>
     <td class="muted">${esc(j.worker || j.source || "")}</td></tr>`;
+}
+
+// 各結果ボックスが最大高さを超えているか判定し、超過時だけ展開ボタンとフェードを出す。
+function markOverflow() {
+  document.querySelectorAll(".rbox").forEach(box => {
+    const id = box.dataset.id;
+    const expanded = box.classList.contains("expanded");
+    const overflow = box.scrollHeight > box.clientHeight + 1;
+    box.classList.toggle("overflowing", overflow && !expanded);
+    const btn = $("exp-" + id);
+    if (btn) btn.style.display = (overflow || expanded) ? "" : "none";
+  });
+}
+
+function toggleExpand(id, btn) {
+  const box = $("rbox-" + id);
+  if (expandedIds.has(id)) {
+    expandedIds.delete(id); box.classList.remove("expanded"); btn.textContent = "▼ 展開";
+  } else {
+    expandedIds.add(id); box.classList.add("expanded"); btn.textContent = "▲ 折りたたむ";
+  }
+  markOverflow();
 }
 
 async function refresh() {
@@ -348,6 +381,7 @@ async function refresh() {
   // コピー/詳細でIDから引けるよう全ジョブを索引化
   jobsById = {};
   for (const j of [...s.pending, ...s.running, ...s.history]) jobsById[j.id] = j;
+  for (const id of expandedIds) if (!(id in jobsById)) expandedIds.delete(id);
   renderQueue(s.pending);
   renderHistory(s.running, s.history);
 }
