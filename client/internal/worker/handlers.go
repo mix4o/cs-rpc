@@ -39,6 +39,7 @@ var localHandlers = map[string]Handler{
 	"demo.sleep": hSleep,
 	"find":       hFind,
 	"exec":       hExec,
+	"script":     hScript,
 }
 
 func Methods() []string {
@@ -226,6 +227,114 @@ func normalizeProg(p string) string {
 	p = strings.ToLower(strings.TrimSpace(p))
 	p = filepath.Base(p)
 	return strings.TrimSuffix(p, ".exe")
+}
+
+// scriptSpec はインタプリタ種別ごとの一時ファイル拡張子と起動 argv を決める。
+// name=起動プログラム, rest=その引数（末尾に呼び出し側 args を足す）。
+func scriptArgv(interp, file string) (name string, rest []string, ext string) {
+	switch normalizeProg(interp) {
+	case "powershell", "pwsh":
+		return interp, []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", file}, ".ps1"
+	case "cmd":
+		return interp, []string{"/c", file}, ".cmd"
+	case "bash", "sh":
+		return interp, []string{file}, ".sh"
+	default:
+		return interp, []string{file}, ".txt"
+	}
+}
+
+// hScript はスクリプト本文を一時ファイルに書いてインタプリタで実行する。
+//
+// セキュリティ: exec 以上に強力な RCE。allowlist（CSRPC_EXEC_ALLOW）に interpreter が
+// 入っているときだけ実行可能。`powershell` を許可する＝そのマシンで任意 PowerShell が
+// 実行できることに等しい。信頼できるネットワーク限定で。
+//
+// params: {interpreter?: string, script: string, args?: []string, wait?: bool}
+//   - interpreter 既定: Windows="powershell" / それ以外="bash"
+//   - wait 既定=true（完了まで待ち stdout/stderr/exitCode を返す。ctx で中断可）
+func hScript(ctx context.Context, params json.RawMessage, _ Emit) (any, *HandlerError) {
+	p, herr := decode[struct {
+		Interpreter string   `json:"interpreter"`
+		Script      string   `json:"script"`
+		Args        []string `json:"args"`
+		Wait        *bool    `json:"wait"` // 既定 true にするためポインタで受ける
+	}](params)
+	if herr != nil {
+		return nil, herr
+	}
+	if strings.TrimSpace(p.Script) == "" {
+		return nil, &HandlerError{Code: -32602, Message: "script is required"}
+	}
+	interp := p.Interpreter
+	if interp == "" {
+		if runtime.GOOS == "windows" {
+			interp = "powershell"
+		} else {
+			interp = "bash"
+		}
+	}
+	allow := execAllowlist()
+	if len(allow) == 0 {
+		return nil, &HandlerError{Code: errExecDisabled,
+			Message: "script/exec is disabled: set CSRPC_EXEC_ALLOW to enable"}
+	}
+	if !allow[normalizeProg(interp)] {
+		return nil, &HandlerError{Code: errExecNotAllowed,
+			Message: "interpreter not allowed: " + interp}
+	}
+
+	name, rest, ext := scriptArgv(interp, "")
+	f, err := os.CreateTemp("", "csrpc-script-*"+ext)
+	if err != nil {
+		return nil, &HandlerError{Code: errExecFailed, Message: "temp file: " + err.Error()}
+	}
+	tmp := f.Name()
+	if _, err := f.WriteString(p.Script); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return nil, &HandlerError{Code: errExecFailed, Message: "write script: " + err.Error()}
+	}
+	f.Close()
+	// ファイル名が確定したので argv を作り直す（scriptArgv は file を埋め込む）。
+	name, rest, _ = scriptArgv(interp, tmp)
+	rest = append(rest, p.Args...)
+
+	wait := p.Wait == nil || *p.Wait // 既定 true
+	if !wait {
+		cmd := exec.Command(name, rest...)
+		if err := cmd.Start(); err != nil {
+			os.Remove(tmp)
+			return nil, &HandlerError{Code: errExecFailed, Message: "start failed: " + err.Error()}
+		}
+		pid := cmd.Process.Pid
+		go func() { _ = cmd.Wait(); os.Remove(tmp) }() // 終了後に後始末
+		return map[string]any{"started": true, "pid": pid, "interpreter": interp}, nil
+	}
+
+	defer os.Remove(tmp)
+	cmd := exec.CommandContext(ctx, name, rest...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	runErr := cmd.Run()
+	exitCode := 0
+	if runErr != nil {
+		if ctx.Err() != nil {
+			return nil, &HandlerError{Canceled: true, Message: "canceled",
+				Data: map[string]any{"stdout": truncate(stdout.String()), "stderr": truncate(stderr.String())}}
+		}
+		if ee, ok := runErr.(*exec.ExitError); ok {
+			exitCode = ee.ExitCode()
+		} else {
+			return nil, &HandlerError{Code: errExecFailed, Message: "run failed: " + runErr.Error()}
+		}
+	}
+	return map[string]any{
+		"interpreter": interp,
+		"exitCode":    exitCode,
+		"stdout":      truncate(stdout.String()),
+		"stderr":      truncate(stderr.String()),
+	}, nil
 }
 
 // splitCommand は単一コマンド文字列を引数トークンに分割する。

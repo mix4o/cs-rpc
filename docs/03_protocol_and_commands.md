@@ -42,6 +42,7 @@ cs-rpc の通信は目的の異なる2系統に分かれる。
 | `demo.sleep` | `{seconds: number}` | `{slept: number}` | ― | ✓ | ― | 指定秒スリープ（最大10s）。running 可視化用。`ctx` で中断可 |
 | `find` | `{path, name, maxResults}` | 下記参照 | ― | ✓ | ✓ | パス配下を走査。**長時間・進捗・キャンセル対応**（4章） |
 | `exec` | `{program, args?, wait?}` | 下記参照 | ― | ✓ | ― | **外部プログラム実行**。allowlist 必須・既定無効（2.4・⚠️セキュリティ） |
+| `script` | `{interpreter?, script, args?, wait?}` | 下記参照 | ― | ✓ | ― | **スクリプト実行**（PowerShell 等）。一時ファイル化して実行。allowlist 必須（2.5） |
 
 - 「サーバ」= サーバ側 Python ハンドラに登録済み（`run-now`/`step`/autorun で実行される）。
 - 「ワーカ」= Go クライアントの `worker` がローカル実行できる（enqueue → lease で実行）。
@@ -128,7 +129,35 @@ result（`wait=true`／出力回収）:
 > - 制限は**実行するクライアント側で強制**される（サーバ/操作者は上書きできない）。
 > - 信頼できるネットワーク限定で使うこと。外部公開の可能性があるなら認証を先に入れる。
 
-### 2.5 エラー
+### 2.5 `script`（スクリプト実行）
+スクリプト本文を渡すと、ワーカが一時ファイルに書いてインタプリタで実行し、
+出力を回収して後始末する。複数行スクリプトをそのまま書けるのが `exec` との違い。
+
+リクエスト params:
+```json
+{ "interpreter": "powershell",
+  "script": "Get-Process | Select -First 3\nWrite-Output done",
+  "args": [], "wait": true }
+```
+| フィールド | 型 | 既定 | 意味 |
+| --- | --- | --- | --- |
+| `interpreter` | string | Win=`powershell` / 他=`bash` | 実行系。`powershell`/`pwsh`/`cmd`/`bash`/`sh` 等 |
+| `script` | string | （必須） | スクリプト本文（複数行可） |
+| `args` | string[] | `[]` | スクリプトへ渡す引数 |
+| `wait` | bool | `true` | `true`=完了まで待ち出力回収 / `false`=起動のみ |
+
+- 一時ファイル拡張子は interpreter に応じて `.ps1`/`.cmd`/`.sh` 等。
+- powershell は `-NoProfile -ExecutionPolicy Bypass -File <tmp>` で実行。
+- result は `exec`（`wait`）と同形（`{exitCode, stdout, stderr, interpreter}`）。`wait=true` は
+  `ctx` に紐づき「中断」可能。
+
+> ### ⚠️ セキュリティ（script）
+> スクリプト実行は `exec` 以上の**任意コード実行**。`exec` と同じ **`CSRPC_EXEC_ALLOW`**
+> で interpreter をゲートする（未設定=無効・`1003`、許可外=`1002`）。
+> **`powershell` を allowlist に入れる＝そのマシンで任意 PowerShell が実行可能**になる、と
+> 理解した上で、閉じた研修環境限定で使うこと。
+
+### 2.6 エラー
 `result` の代わりに `error`（JSON-RPC 準拠）で返す。コード体系は
 [00_overview.md 3.4](00_overview.md) と一致。
 

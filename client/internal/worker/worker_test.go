@@ -125,6 +125,39 @@ func TestExecCommandStringAllowlistOnFirstToken(t *testing.T) {
 	}
 }
 
+func TestScriptRunsMultilineAndCaptures(t *testing.T) {
+	t.Setenv("CSRPC_EXEC_ALLOW", "bash")
+	body := "echo line-one\necho line-two"
+	params, _ := json.Marshal(map[string]any{"interpreter": "bash", "script": body})
+	out, herr := hScript(context.Background(), params, noEmit)
+	if herr != nil {
+		t.Fatalf("script error: %v", herr)
+	}
+	m := out.(map[string]any)
+	so := m["stdout"].(string)
+	if m["exitCode"].(int) != 0 || !strings.Contains(so, "line-one") || !strings.Contains(so, "line-two") {
+		t.Fatalf("unexpected: %v", m)
+	}
+}
+
+func TestScriptDisabledWithoutAllowlist(t *testing.T) {
+	t.Setenv("CSRPC_EXEC_ALLOW", "")
+	params, _ := json.Marshal(map[string]any{"interpreter": "bash", "script": "echo x"})
+	_, herr := hScript(context.Background(), params, noEmit)
+	if herr == nil || herr.Code != errExecDisabled {
+		t.Fatalf("expected disabled, got %v", herr)
+	}
+}
+
+func TestScriptInterpreterNotAllowed(t *testing.T) {
+	t.Setenv("CSRPC_EXEC_ALLOW", "bash")
+	params, _ := json.Marshal(map[string]any{"interpreter": "powershell", "script": "echo x"})
+	_, herr := hScript(context.Background(), params, noEmit)
+	if herr == nil || herr.Code != errExecNotAllowed {
+		t.Fatalf("expected not-allowed, got %v", herr)
+	}
+}
+
 func TestFindCancel(t *testing.T) {
 	dir := t.TempDir()
 	for i := 0; i < 50; i++ {

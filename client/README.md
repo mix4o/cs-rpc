@@ -123,6 +123,17 @@ $env:CSRPC_ENDPOINT   = "http://192.168.1.180:8080/rpc"
 未設定なら `exec` は `error 1003`（無効）、allowlist 外は `error 1002`（不許可）で拒否される。
 信頼できるネットワーク限定で使うこと。
 
+### script（スクリプト実行・PowerShell 等）
+`script`（`{interpreter?, script, args?, wait?}`）は**スクリプト本文**を渡すと、ワーカが
+一時ファイル化して実行し出力を回収する（複数行をそのまま書ける）。interpreter 既定は
+Windows=`powershell` / 他=`bash`。gate は `exec` と同じ `CSRPC_EXEC_ALLOW`（interpreter 名）。
+
+```jsonc
+{"interpreter":"powershell","script":"Get-Process | Select -First 3\nWrite-Output done","wait":true}
+```
+⚠️ `powershell` を allowlist に入れる＝そのマシンで**任意 PowerShell が実行可能**になる。
+閉じた研修環境限定で、入れる interpreter は最小限に。
+
 ### 長時間コマンド（find）と進捗・キャンセル
 `find`（params 例: `{"path":"/etc","name":"*.conf"}`）は時間がかかり得るため、
 非同期＋ポーリング方式で扱う:
