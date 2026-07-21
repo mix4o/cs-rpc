@@ -3,12 +3,14 @@ package worker
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -40,6 +42,7 @@ var localHandlers = map[string]Handler{
 	"find":       hFind,
 	"exec":       hExec,
 	"script":     hScript,
+	"putfile":    hPutfile,
 }
 
 func Methods() []string {
@@ -227,6 +230,90 @@ func normalizeProg(p string) string {
 	p = strings.ToLower(strings.TrimSpace(p))
 	p = filepath.Base(p)
 	return strings.TrimSuffix(p, ".exe")
+}
+
+// putfile のドメインエラーコード
+const (
+	errPutDisabled = 1005 // CSRPC_PUTFILE_DIR 未設定（無効）
+	errPutOutside  = 1006 // 許可ディレクトリ外への書き込み
+	errPutFailed   = 1007 // 書き込み失敗
+)
+
+// hPutfile はクライアントのディスクにファイルを書き込む（テスト用スクリプトの配置等）。
+//
+// セキュリティ: 任意ファイル書き込みは危険。既定では無効で、実行側（ワーカ）の環境変数
+// CSRPC_PUTFILE_DIR に「書き込みを許可するベースディレクトリ」を設定したときだけ有効。
+// 書き込み先はそのディレクトリ配下に限定し、.. によるパストラバーサルは拒否する。
+//
+// params: {path, content, encoding?:"text"|"base64", mode?:"0755", overwrite?:bool}
+//   - path が相対ならベースディレクトリ基準、絶対ならベース配下であること。
+func hPutfile(_ context.Context, params json.RawMessage, _ Emit) (any, *HandlerError) {
+	p, herr := decode[struct {
+		Path      string `json:"path"`
+		Content   string `json:"content"`
+		Encoding  string `json:"encoding"`
+		Mode      string `json:"mode"`
+		Overwrite *bool  `json:"overwrite"`
+	}](params)
+	if herr != nil {
+		return nil, herr
+	}
+	if p.Path == "" {
+		return nil, &HandlerError{Code: -32602, Message: "path is required"}
+	}
+
+	base := strings.TrimSpace(os.Getenv("CSRPC_PUTFILE_DIR"))
+	if base == "" {
+		return nil, &HandlerError{Code: errPutDisabled,
+			Message: "putfile disabled: set CSRPC_PUTFILE_DIR to an allowed base directory"}
+	}
+	absBase, err := filepath.Abs(base)
+	if err != nil {
+		return nil, &HandlerError{Code: errPutFailed, Message: "bad base dir: " + err.Error()}
+	}
+
+	target := p.Path
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(absBase, target)
+	}
+	target = filepath.Clean(target)
+	// ベースディレクトリ配下に収まっているか（.. での脱出を拒否）。
+	rel, err := filepath.Rel(absBase, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, &HandlerError{Code: errPutOutside,
+			Message: "path is outside CSRPC_PUTFILE_DIR: " + target}
+	}
+
+	var data []byte
+	if strings.EqualFold(p.Encoding, "base64") {
+		b, err := base64.StdEncoding.DecodeString(p.Content)
+		if err != nil {
+			return nil, &HandlerError{Code: -32602, Message: "invalid base64: " + err.Error()}
+		}
+		data = b
+	} else {
+		data = []byte(p.Content)
+	}
+
+	if p.Overwrite != nil && !*p.Overwrite {
+		if _, err := os.Stat(target); err == nil {
+			return nil, &HandlerError{Code: errPutFailed, Message: "file exists and overwrite=false"}
+		}
+	}
+
+	mode := os.FileMode(0o644)
+	if p.Mode != "" {
+		if m, err := strconv.ParseUint(p.Mode, 8, 32); err == nil {
+			mode = os.FileMode(m)
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return nil, &HandlerError{Code: errPutFailed, Message: "mkdir: " + err.Error()}
+	}
+	if err := os.WriteFile(target, data, mode); err != nil {
+		return nil, &HandlerError{Code: errPutFailed, Message: "write: " + err.Error()}
+	}
+	return map[string]any{"path": target, "bytes": len(data)}, nil
 }
 
 // scriptSpec はインタプリタ種別ごとの一時ファイル拡張子と起動 argv を決める。

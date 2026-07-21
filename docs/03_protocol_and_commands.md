@@ -43,6 +43,7 @@ cs-rpc の通信は目的の異なる2系統に分かれる。
 | `find` | `{path, name, maxResults}` | 下記参照 | ― | ✓ | ✓ | パス配下を走査。**長時間・進捗・キャンセル対応**（4章） |
 | `exec` | `{program, args?, wait?}` | 下記参照 | ― | ✓ | ― | **外部プログラム実行**。allowlist 必須・既定無効（2.4・⚠️セキュリティ） |
 | `script` | `{interpreter?, script, args?, wait?}` | 下記参照 | ― | ✓ | ― | **スクリプト実行**（PowerShell 等）。一時ファイル化して実行。allowlist 必須（2.5） |
+| `putfile` | `{path, content, encoding?, mode?, overwrite?}` | `{path, bytes}` | ― | ✓ | ― | **ファイル書き込み**（テストスクリプト配置等）。`CSRPC_PUTFILE_DIR` 必須（2.6） |
 
 - 「サーバ」= サーバ側 Python ハンドラに登録済み（`run-now`/`step`/autorun で実行される）。
 - 「ワーカ」= Go クライアントの `worker` がローカル実行できる（enqueue → lease で実行）。
@@ -157,7 +158,36 @@ result（`wait=true`／出力回収）:
 > **`powershell` を allowlist に入れる＝そのマシンで任意 PowerShell が実行可能**になる、と
 > 理解した上で、閉じた研修環境限定で使うこと。
 
-### 2.6 エラー
+### 2.6 `putfile`（ファイル配置）
+クライアントのディスクにファイルを書き込む。テスト用スクリプトを送り込んでおき、
+あとで `exec`/`script` から実行・再利用する、といった用途。
+
+リクエスト params:
+```json
+{ "path": "t.ps1", "content": "Write-Output hi",
+  "encoding": "text", "mode": "0755", "overwrite": true }
+```
+| フィールド | 型 | 既定 | 意味 |
+| --- | --- | --- | --- |
+| `path` | string | （必須） | 書き込み先。相対ならベースディレクトリ基準、絶対ならベース配下必須 |
+| `content` | string | `""` | 内容 |
+| `encoding` | string | `text` | `text` または `base64`（バイナリ配置用） |
+| `mode` | string(8進) | `0644` | ファイル権限（Unix。`0755` で実行可） |
+| `overwrite` | bool | `true` | `false` なら既存ファイルがあれば失敗 |
+
+result: `{ "path": "/abs/path/t.ps1", "bytes": 15 }`
+
+> ### ⚠️ セキュリティ（putfile）
+> 任意ファイル書き込みは危険（重要ファイル上書き等）。既定は無効で、実行側（ワーカ）の
+> 環境変数 **`CSRPC_PUTFILE_DIR`**（許可ベースディレクトリ）を設定したときだけ有効。
+> - 書き込み先は**そのディレクトリ配下に限定**、`..` によるパストラバーサルは拒否（`1006`）。
+> - 未設定なら `1005`（無効）、書き込み失敗は `1007`。
+> - 配置とその実行を組み合わせると実質 RCE。`CSRPC_EXEC_ALLOW`（exec/script）と併せ、
+>   閉じた研修環境限定で使うこと。
+>
+> 例: `CSRPC_PUTFILE_DIR=C:\csrpc-tests` → `path:"t.ps1"` は `C:\csrpc-tests\t.ps1` に書かれる。
+
+### 2.7 エラー
 `result` の代わりに `error`（JSON-RPC 準拠）で返す。コード体系は
 [00_overview.md 3.4](00_overview.md) と一致。
 
@@ -167,9 +197,12 @@ result（`wait=true`／出力回収）:
 | `-32602` | パラメータ不正 |
 | `-32603` | 内部エラー |
 | `1001` | （`math.div`）ゼロ除算 |
-| `1002` | （`exec`）allowlist 外のプログラム |
-| `1003` | （`exec`）allowlist 未設定で無効 |
-| `1004` | （`exec`）起動/実行失敗 |
+| `1002` | （`exec`/`script`）allowlist 外のプログラム/interpreter |
+| `1003` | （`exec`/`script`）allowlist 未設定で無効 |
+| `1004` | （`exec`/`script`）起動/実行失敗 |
+| `1005` | （`putfile`）`CSRPC_PUTFILE_DIR` 未設定で無効 |
+| `1006` | （`putfile`）許可ディレクトリ外への書き込み |
+| `1007` | （`putfile`）書き込み失敗 |
 
 ---
 

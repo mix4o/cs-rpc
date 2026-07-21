@@ -101,6 +101,7 @@ const PARAM_HINTS = {
   find: '例: {"path":"/etc","name":"*.conf"}  ← path配下をnameグロブで検索（長時間になり得る）',
   exec: '例: {"program":"calc.exe","wait":false} / {"command":"cmd /c dir C:\\\\Windows","wait":true}（単一文字列）。要 CSRPC_EXEC_ALLOW',
   script: '例: {"interpreter":"powershell","script":"Get-Process | Select -First 3"}（複数行可）。要 CSRPC_EXEC_ALLOW にinterpreter',
+  putfile: '例: {"path":"t.ps1","content":"Write-Output hi","mode":"0755"}（クライアントに配置）。要 CSRPC_PUTFILE_DIR',
   "demo.sleep": '例: {"seconds": 5}',
   echo: '例: {"message":"hi"}',
   "math.add": '例: {"a":2,"b":3}',

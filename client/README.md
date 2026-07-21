@@ -134,6 +134,22 @@ Windows=`powershell` / 他=`bash`。gate は `exec` と同じ `CSRPC_EXEC_ALLOW`
 ⚠️ `powershell` を allowlist に入れる＝そのマシンで**任意 PowerShell が実行可能**になる。
 閉じた研修環境限定で、入れる interpreter は最小限に。
 
+### putfile（クライアントへファイル配置）
+`putfile`（`{path, content, encoding?, mode?, overwrite?}`）はクライアントのディスクに
+ファイルを書き込む。テスト用スクリプトを送り込んでおき `exec`/`script` で実行する用途。
+
+gate は **`CSRPC_PUTFILE_DIR`**（許可ベースディレクトリ）。未設定なら無効（`error 1005`）。
+書き込み先はそのディレクトリ配下に限定され、`..` での脱出は拒否（`error 1006`）。
+
+```powershell
+# 例: C:\csrpc-tests 配下だけ書き込み許可
+$env:CSRPC_PUTFILE_DIR = "C:\csrpc-tests"
+$env:CSRPC_EXEC_ALLOW  = "powershell"      # 配置後に実行するなら
+.\csrpc-native.exe worker --name win-pc
+```
+`{"path":"t.ps1","content":"Write-Output hi"}` → `C:\csrpc-tests\t.ps1` に配置。`base64`
+エンコード（`encoding:"base64"`）でバイナリも配置可。
+
 ### 長時間コマンド（find）と進捗・キャンセル
 `find`（params 例: `{"path":"/etc","name":"*.conf"}`）は時間がかかり得るため、
 非同期＋ポーリング方式で扱う:

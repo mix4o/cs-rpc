@@ -158,6 +158,56 @@ func TestScriptInterpreterNotAllowed(t *testing.T) {
 	}
 }
 
+func TestPutfileDisabledWithoutBaseDir(t *testing.T) {
+	t.Setenv("CSRPC_PUTFILE_DIR", "")
+	params, _ := json.Marshal(map[string]any{"path": "x.txt", "content": "hi"})
+	_, herr := hPutfile(context.Background(), params, noEmit)
+	if herr == nil || herr.Code != errPutDisabled {
+		t.Fatalf("expected disabled, got %v", herr)
+	}
+}
+
+func TestPutfileWritesWithinBase(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("CSRPC_PUTFILE_DIR", base)
+	params, _ := json.Marshal(map[string]any{"path": "sub/test.sh", "content": "echo hi\n", "mode": "0755"})
+	out, herr := hPutfile(context.Background(), params, noEmit)
+	if herr != nil {
+		t.Fatalf("putfile error: %v", herr)
+	}
+	got, err := os.ReadFile(filepath.Join(base, "sub", "test.sh"))
+	if err != nil || string(got) != "echo hi\n" {
+		t.Fatalf("file not written correctly: %q err=%v", got, err)
+	}
+	if out.(map[string]any)["bytes"].(int) != len("echo hi\n") {
+		t.Fatalf("bytes mismatch: %v", out)
+	}
+}
+
+func TestPutfileRejectsTraversal(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("CSRPC_PUTFILE_DIR", base)
+	params, _ := json.Marshal(map[string]any{"path": "../escape.txt", "content": "x"})
+	_, herr := hPutfile(context.Background(), params, noEmit)
+	if herr == nil || herr.Code != errPutOutside {
+		t.Fatalf("expected outside(%d), got %v", errPutOutside, herr)
+	}
+}
+
+func TestPutfileBase64(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("CSRPC_PUTFILE_DIR", base)
+	enc := "aGVsbG8=" // "hello"
+	params, _ := json.Marshal(map[string]any{"path": "b.bin", "content": enc, "encoding": "base64"})
+	if _, herr := hPutfile(context.Background(), params, noEmit); herr != nil {
+		t.Fatalf("putfile b64 error: %v", herr)
+	}
+	got, _ := os.ReadFile(filepath.Join(base, "b.bin"))
+	if string(got) != "hello" {
+		t.Fatalf("base64 decode wrong: %q", got)
+	}
+}
+
 func TestFindCancel(t *testing.T) {
 	dir := t.TempDir()
 	for i := 0; i < 50; i++ {
