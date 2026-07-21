@@ -106,8 +106,10 @@ CGO_ENABLED=1 go build -tags webview -o csrpc ./cmd/csrpc
 コントロールページのメソッド選択に自動で現れる。
 
 ### exec（外部プログラム実行）と allowlist ⚠️
-`exec`（`{program, args?, wait?}`）はクライアント上でプログラムを実行する。`wait:false` は
-起動して即完了（`calc.exe` 等）、`wait:true` は完了まで待ち stdout/終了コードを返す。
+`exec`（`{program, args?, wait?}` または `{command, wait?}`）はクライアント上でプログラムを
+実行する。`wait:false` は起動して即完了（`calc.exe` 等）、`wait:true` は完了まで待ち
+stdout/終了コードを返す。引数は `args` 配列で渡すか、`command` に単一文字列で渡す
+（クォート対応・先頭トークンが allowlist 判定対象。例: `{"command":"cmd /c dir","wait":true}`）。
 
 これは実質リモートコード実行なので、**既定では無効**。実行するには**ワーカ側の環境変数
 `CSRPC_EXEC_ALLOW`** に許可プログラム名を列挙する（そこにあるものだけ実行可）:

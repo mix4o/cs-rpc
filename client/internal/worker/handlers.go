@@ -228,6 +228,43 @@ func normalizeProg(p string) string {
 	return strings.TrimSuffix(p, ".exe")
 }
 
+// splitCommand は単一コマンド文字列を引数トークンに分割する。
+// クォート（"…" / '…'）でグループ化し、クォートは除去する。バックスラッシュは
+// エスケープ扱いしない（Windows パス `C:\dir` を壊さないため）。
+func splitCommand(s string) []string {
+	var toks []string
+	var cur strings.Builder
+	inTok := false
+	var quote rune
+	for _, r := range s {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				cur.WriteRune(r)
+			}
+			inTok = true
+		case r == '"' || r == '\'':
+			quote = r
+			inTok = true
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			if inTok {
+				toks = append(toks, cur.String())
+				cur.Reset()
+				inTok = false
+			}
+		default:
+			cur.WriteRune(r)
+			inTok = true
+		}
+	}
+	if inTok {
+		toks = append(toks, cur.String())
+	}
+	return toks
+}
+
 func truncate(s string) string {
 	if len(s) > execOutputCap {
 		return s[:execOutputCap] + "…(truncated)"
@@ -248,13 +285,20 @@ func hExec(ctx context.Context, params json.RawMessage, _ Emit) (any, *HandlerEr
 	p, herr := decode[struct {
 		Program string   `json:"program"`
 		Args    []string `json:"args"`
+		Command string   `json:"command"` // 単一文字列。program 未指定時にこれを分割して使う
 		Wait    bool     `json:"wait"`
 	}](params)
 	if herr != nil {
 		return nil, herr
 	}
+	// program 未指定なら command をトークン分割して program+args を得る。
+	// 先頭トークンが program として allowlist 判定されるため、シェル丸投げより安全。
 	if p.Program == "" {
-		return nil, &HandlerError{Code: -32602, Message: "program is required"}
+		toks := splitCommand(p.Command)
+		if len(toks) == 0 {
+			return nil, &HandlerError{Code: -32602, Message: "program or command is required"}
+		}
+		p.Program, p.Args = toks[0], toks[1:]
 	}
 
 	allow := execAllowlist()

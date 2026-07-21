@@ -89,9 +89,23 @@ result:
 ```
 | フィールド | 型 | 既定 | 意味 |
 | --- | --- | --- | --- |
-| `program` | string | （必須） | 実行するプログラム名/パス |
-| `args` | string[] | `[]` | 引数 |
+| `program` | string | ※ | 実行するプログラム名/パス |
+| `args` | string[] | `[]` | 引数（1要素=1引数。シェル分割なし） |
+| `command` | string | ※ | 単一コマンド文字列。`program` 未指定時にこれを分割して使う |
 | `wait` | bool | `false` | `false`=起動して即完了（突き放し）/ `true`=完了まで待ち出力を回収 |
+
+※ `program` か `command` のどちらかが必須。両方あれば `program`+`args` を優先。
+
+`command` は空白区切りでトークン分割し、**先頭を program（allowlist 判定対象）**、
+残りを args とする。クォート（`"…"`/`'…'`）でグループ化でき、バックスラッシュは
+エスケープ扱いしない（Windows パスの `\` を保持）。例:
+```jsonc
+{ "command": "notepad \"C:\\My Docs\\a.txt\"", "wait": false }
+// → program="notepad", args=["C:\\My Docs\\a.txt"]
+{ "command": "cmd /c dir C:\\Windows", "wait": true }
+```
+シェル機能（パイプ等）は解釈しないため、必要なら `cmd /c ...` / `bash -c ...` を明示する
+（この場合の program は `cmd`/`bash` なので、それらを allowlist に入れる）。
 
 result（`wait=false`／起動のみ）:
 ```json

@@ -81,6 +81,50 @@ func TestExecWaitCapturesOutput(t *testing.T) {
 	}
 }
 
+func TestSplitCommand(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{`echo hi there`, []string{"echo", "hi", "there"}},
+		{`notepad "C:\My Docs\a.txt"`, []string{"notepad", `C:\My Docs\a.txt`}},
+		{`cmd /c dir C:\Windows`, []string{"cmd", "/c", "dir", `C:\Windows`}},
+		{`  spaced   out  `, []string{"spaced", "out"}},
+	}
+	for _, c := range cases {
+		got := splitCommand(c.in)
+		if len(got) != len(c.want) {
+			t.Fatalf("%q -> %v, want %v", c.in, got, c.want)
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Fatalf("%q -> %v, want %v", c.in, got, c.want)
+			}
+		}
+	}
+}
+
+func TestExecCommandString(t *testing.T) {
+	t.Setenv("CSRPC_EXEC_ALLOW", "echo")
+	params, _ := json.Marshal(map[string]any{"command": `echo "a b c"`, "wait": true})
+	out, herr := hExec(context.Background(), params, noEmit)
+	if herr != nil {
+		t.Fatalf("exec error: %v", herr)
+	}
+	if !strings.Contains(out.(map[string]any)["stdout"].(string), "a b c") {
+		t.Fatalf("unexpected: %v", out)
+	}
+}
+
+func TestExecCommandStringAllowlistOnFirstToken(t *testing.T) {
+	t.Setenv("CSRPC_EXEC_ALLOW", "echo") // rm は許可外
+	params, _ := json.Marshal(map[string]any{"command": `rm -rf /`, "wait": true})
+	_, herr := hExec(context.Background(), params, noEmit)
+	if herr == nil || herr.Code != errExecNotAllowed {
+		t.Fatalf("expected not-allowed on first token, got %v", herr)
+	}
+}
+
 func TestFindCancel(t *testing.T) {
 	dir := t.TempDir()
 	for i := 0; i < 50; i++ {
