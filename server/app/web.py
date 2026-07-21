@@ -48,10 +48,21 @@ class CompleteBody(BaseModel):
     id: str
     result: Any | None = None
     error: dict | None = None
+    canceled: bool = False
 
 
 class IdBody(BaseModel):
     id: str
+
+
+class ProgressBody(BaseModel):
+    id: str
+    progress: dict
+
+
+class AnnounceBody(BaseModel):
+    worker: str = "worker"
+    methods: list[str] = []
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -66,7 +77,8 @@ async def state() -> JSONResponse:
 
 @router.post("/control/enqueue")
 async def enqueue(body: EnqueueBody) -> dict:
-    if body.method not in registry():
+    # サーバ登録メソッドに加え、ワーカが申告したメソッド（例: find）も許可する。
+    if body.method not in store.known_methods():
         raise HTTPException(status_code=400, detail=f"unknown method: {body.method}")
     job = store.enqueue(body.method, body.params, source=body.source)
     return job.to_dict()
@@ -100,10 +112,11 @@ async def autorun(body: AutorunBody) -> dict:
 
 @router.post("/control/cancel")
 async def cancel(body: IdBody) -> dict:
-    ok = store.cancel(body.id)
-    if not ok:
+    result = store.cancel(body.id)
+    if result == "not_found":
         raise HTTPException(status_code=404, detail="job not found or not cancelable")
-    return {"canceled": body.id}
+    # canceled = queued を除去 / cancel_requested = running へ中断要求
+    return {"id": body.id, "result": result}
 
 
 @router.post("/control/clear")
@@ -123,7 +136,21 @@ async def lease(body: LeaseBody) -> Response:
 
 @router.post("/control/complete")
 async def complete(body: CompleteBody) -> dict:
-    job = store.complete(body.id, result=body.result, error=body.error)
+    job = store.complete(body.id, result=body.result, error=body.error, canceled=body.canceled)
     if job is None:
         raise HTTPException(status_code=404, detail="running job not found")
     return job.to_dict()
+
+
+@router.post("/control/progress")
+async def progress(body: ProgressBody) -> dict:
+    """ワーカからの途中経過報告。応答で中断要求(cancel)の有無を返す。"""
+    cancel_requested = store.report_progress(body.id, body.progress)
+    return {"cancel": cancel_requested}
+
+
+@router.post("/control/announce")
+async def announce(body: AnnounceBody) -> dict:
+    """ワーカが実行可能メソッドを申告（コントロールページの選択肢に反映）。"""
+    store.announce_methods(body.methods)
+    return {"known": sorted(store.known_methods())}

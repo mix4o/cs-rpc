@@ -3,7 +3,11 @@
 クロスプラットフォーム（Windows / Linux）で動作する、クライアント・サーバ間の
 汎用リクエスト応答（RPC）プログラムの全体設計。
 
-- 関連: [クライアント設計書](01_client_go.md) / [サーバ設計書](02_server_python.md)
+- 関連: [クライアント設計書](01_client_go.md) / [サーバ設計書](02_server_python.md) / [プロトコル&コマンド仕様](03_protocol_and_commands.md)
+
+> 本書は基盤となる同期 RPC（`/rpc`）の設計。その後に追加した**コントロールプレーン**
+> （ジョブキュー・ワーカ実行・進捗/キャンセル・コマンドカタログ）は
+> [03_protocol_and_commands.md](03_protocol_and_commands.md) にまとめている。
 
 ---
 
@@ -66,6 +70,11 @@
 | `POST` | `/rpc` | RPC 本体。JSON-RPC リクエストを受ける |
 | `GET`  | `/healthz` | ヘルスチェック（死活監視・疎通確認） |
 | `GET`  | `/rpc/methods` | 登録済みメソッド一覧（開発時の自己記述用） |
+
+上記はデータプレーン（同期 RPC）。この他に**コントロールプレーン**（`GET /`
+コントロールページ、`POST /control/*` のジョブキュー/ワーカ用 API）がある。
+エンドポイント一覧とコマンド/パラメータの詳細は
+[03_protocol_and_commands.md](03_protocol_and_commands.md) を参照。
 
 - Content-Type: `application/json; charset=utf-8`
 - 文字コードは **UTF-8 固定**（Windows/Linux 間の文字化け防止）
@@ -194,21 +203,29 @@ Client                         Server
 ```
 cs-rpc/
 ├── docs/
-│   ├── 00_overview.md          # 本書
+│   ├── 00_overview.md          # 本書（基盤 RPC の設計）
 │   ├── 01_client_go.md         # クライアント設計
-│   └── 02_server_python.md     # サーバ設計
+│   ├── 02_server_python.md     # サーバ設計
+│   └── 03_protocol_and_commands.md  # 全エンドポイント & コマンド/パラメータ仕様
 ├── client/                     # Go クライアント
 │   ├── go.mod
-│   ├── cmd/csrpc/main.go       # CLI エントリポイント
-│   └── internal/rpc/           # RPC クライアントライブラリ
+│   ├── cmd/csrpc/              # CLI（call/ping/methods/worker）+ GUI 起動
+│   └── internal/
+│       ├── rpc/               # JSON-RPC クライアントライブラリ（データプレーン）
+│       ├── worker/            # ワーカ: lease/complete/progress + ローカルハンドラ(find 等)
+│       └── gui/               # ワーカのローカル GUI（HTML/SSE、-tags webview でネイティブ窓）
 ├── server/                     # Python サーバ
 │   ├── pyproject.toml
 │   ├── app/
-│   │   ├── main.py             # FastAPI アプリ
-│   │   ├── dispatcher.py       # メソッド登録・ディスパッチ
-│   │   ├── protocol.py         # JSON-RPC モデル
-│   │   └── handlers/           # コマンド実装（ここを増やす）
+│   │   ├── main.py            # FastAPI アプリ（/rpc, /healthz, ルータ登録）
+│   │   ├── dispatcher.py      # メソッド登録・ディスパッチ
+│   │   ├── protocol.py        # JSON-RPC モデル・エラー
+│   │   ├── control.py         # ジョブキュー（enqueue/lease/progress/cancel/autorun）
+│   │   ├── web.py             # コントロールページ & /control/* API
+│   │   ├── static/index.html  # コントロールページ
+│   │   └── handlers/          # サーバ側コマンド実装（echo/math/sys）
 │   └── tests/
+├── .github/workflows/build.yml # CI（Windows exe ビルド + テスト）
 └── README.md
 ```
 
@@ -222,7 +239,13 @@ cs-rpc/
 
 ---
 
-## 9. 未決事項 / 今後の検討
+## 9. 実装済みの拡張 / 今後の検討
+実装済み（[03_protocol_and_commands.md](03_protocol_and_commands.md) 参照）:
+- **コントロールプレーン**: ジョブキュー（enqueue/lease/complete）、コントロールページ、
+  ワーカ（別ホストのクライアントが実行）。
+- **非同期ジョブ（受付→ポーリング）＋進捗＋キャンセル**: 長時間コマンド（`find`）に対応。
+
+今後の検討:
 - 認証方式の具体化（APIキー or mTLS or OIDC）。
-- 大きなペイロード / ストリーミングが必要になった場合の別エンドポイント設計。
-- 非同期ジョブ（受付→ポーリング）の必要性（現状は同期のみ）。
+- 大きなペイロード / 真のストリーミング（現状は進捗の逐次報告）。
+- ワーカの複数台運用・ジョブの割り当て制御。

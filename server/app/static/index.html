@@ -95,7 +95,15 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-let methodsLoaded = false;
+let lastMethodsKey = "";
+
+const PARAM_HINTS = {
+  find: '例: {"path":"/etc","name":"*.conf"}  ← path配下をnameグロブで検索（長時間になり得る）',
+  "demo.sleep": '例: {"seconds": 5}',
+  echo: '例: {"message":"hi"}',
+  "math.add": '例: {"a":2,"b":3}',
+};
+function updateHint() { $("paramsHint").textContent = PARAM_HINTS[$("method").value] || ""; }
 
 async function api(path, body) {
   const opt = { method: "POST", headers: {"Content-Type":"application/json"} };
@@ -166,23 +174,40 @@ function renderHistory(running, history) {
     : `<tr><td colspan="5" class="empty">（まだありません）</td></tr>`;
 }
 
+function fmtProgress(p) {
+  if (!p) return "";
+  if (p.scanned !== undefined || p.matched !== undefined)
+    return `scanned ${p.scanned ?? 0}, matched ${p.matched ?? 0}`;
+  return JSON.stringify(p);
+}
+
 function histRow(j) {
   let detail = "";
+  let action = "";
   if (j.state === "error" && j.error) detail = `error ${j.error.code}: ${esc(j.error.message)}`;
   else if (j.state === "done") detail = esc(short(j.result) ?? "");
-  else if (j.state === "running") detail = "…";
+  else if (j.state === "canceled") detail = "⊘ canceled " + esc(short(j.result) ?? "");
+  else if (j.state === "running") {
+    detail = j.progress ? "… " + esc(fmtProgress(j.progress)) : "…";
+    // 実行中は中断ボタンを出す（キャンセル要求 → ワーカが停止）
+    action = `<button class="ghost small" onclick="cancel('${j.id}')">中断</button>`;
+  }
   return `<tr><td>${j.seq}</td><td><code>${esc(j.method)}</code></td>
-    <td>${stateBadge(j.state)}</td><td><pre>${detail}</pre></td>
+    <td>${stateBadge(j.state)} ${action}</td><td><pre>${detail}</pre></td>
     <td class="muted">${esc(j.worker || j.source || "")}</td></tr>`;
 }
 
 async function refresh() {
   let s;
   try { s = await (await fetch("/control/state")).json(); } catch (e) { return; }
-  // methods dropdown（初回のみ）
-  if (!methodsLoaded && s.methods.length) {
+  // methods dropdown（内容が変わったら更新。ワーカ接続後に find 等が増えるため）
+  const key = s.methods.join(",");
+  if (s.methods.length && key !== lastMethodsKey) {
+    const cur = $("method").value;
     $("method").innerHTML = s.methods.map(m => `<option>${esc(m)}</option>`).join("");
-    methodsLoaded = true;
+    if (s.methods.includes(cur)) $("method").value = cur;
+    lastMethodsKey = key;
+    updateHint();
   }
   const dot = $("autorunDot");
   dot.dataset.on = s.autorun ? "1" : "0";
@@ -197,6 +222,7 @@ $("runNowBtn").onclick = runNow;
 $("autorunBtn").onclick = toggleAutorun;
 $("stepBtn").onclick = step;
 $("clearBtn").onclick = clearHistory;
+$("method").addEventListener("change", updateHint);
 setInterval(() => { $("clock").textContent = new Date().toLocaleTimeString(); }, 1000);
 setInterval(refresh, 1000);
 refresh();

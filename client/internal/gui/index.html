@@ -41,8 +41,11 @@
   .s-running { background:#3a2f10; color:var(--warn); }
   .s-done    { background:#12331d; color:var(--ok); }
   .s-error   { background:#3a1414; color:var(--err); }
+  .s-canceled{ background:#2a2f3a; color:var(--muted); }
   .res-ok  { color:#a9e6bb; }
   .res-err { color:#f0a4a0; }
+  .res-run { color:var(--warn); }
+  .res-cancel { color:var(--muted); }
   /* 右: ログ行 */
   .logline { display:flex; gap:8px; padding:1px 0; font-family: ui-monospace,Menlo,Consolas,monospace; }
   .logline .t { color:var(--muted); }
@@ -89,6 +92,7 @@ let nCmd = 0, nLog = 0;
 
 function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function pretty(v){ if(v===undefined||v===null||v==="") return ""; try{ return JSON.stringify(JSON.parse(v)); }catch(_){ return String(v); } }
+function fmtProgress(p){ if(!p) return ""; if(p.scanned!==undefined||p.matched!==undefined) return `scanned ${p.scanned??0}, matched ${p.matched??0}`; return JSON.stringify(p); }
 
 function atBottom(el){ return el.scrollHeight - el.scrollTop - el.clientHeight < 40; }
 function toBottom(id){ const el=$(id); el.scrollTop = el.scrollHeight; hideNew(id); }
@@ -117,6 +121,8 @@ function renderCard(ev){
   let resHtml = '';
   if (ev.state === 'done')  resHtml = `<pre class="res-ok">→ ${esc(pretty(ev.result))}</pre>`;
   else if (ev.state === 'error') resHtml = `<pre class="res-err">✗ ${esc(ev.error||'')}</pre>`;
+  else if (ev.state === 'canceled') resHtml = `<pre class="res-cancel">⊘ canceled ${esc(pretty(ev.result))}</pre>`;
+  else if (ev.state === 'running' && ev.progress) resHtml = `<pre class="res-run">… ${esc(fmtProgress(ev.progress))}</pre>`;
   const timing = ev.doneAt ? `${ev.receivedAt} → ${ev.doneAt} (${ev.elapsedMs}ms)` : `${ev.receivedAt} …`;
   card.innerHTML =
     `<div class="top"><span class="seq">#${ev.seq}</span>`+

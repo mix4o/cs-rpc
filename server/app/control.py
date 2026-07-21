@@ -49,6 +49,8 @@ class Job:
     worker: str | None = None    # 誰が lease したか
     result: Any | None = None
     error: dict | None = None
+    progress: dict | None = None       # 実行中の途中経過（例: {scanned, matched}）
+    cancel_requested: bool = False     # コントロールページからの中断要求
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -63,6 +65,7 @@ class JobStore:
         self._pending: list[str] = []          # queued の id（実行順）
         self._running: dict[str, Job] = {}
         self._history: list[Job] = []          # done/error/canceled（新しい順に前へ）
+        self._worker_methods: set[str] = set() # ワーカが申告した実行可能メソッド
         self._autorun = settings.autorun
         self._tick = settings.autorun_tick
         self._task: asyncio.Task | None = None
@@ -113,27 +116,62 @@ class JobStore:
         self._running[jid] = job
         return job
 
-    def complete(self, job_id: str, result: Any = None, error: dict | None = None) -> Job | None:
+    def complete(self, job_id: str, result: Any = None, error: dict | None = None,
+                 canceled: bool = False) -> Job | None:
         job = self._running.pop(job_id, None)
         if job is None:
             return None
-        job.state = JobState.ERROR if error is not None else JobState.DONE
+        if canceled:
+            job.state = JobState.CANCELED
+        elif error is not None:
+            job.state = JobState.ERROR
+        else:
+            job.state = JobState.DONE
         job.result = result
         job.error = error
         job.updated_at = time.time()
         self._push_history(job)
         return job
 
-    def cancel(self, job_id: str) -> bool:
-        """queued のジョブのみキャンセル可能。"""
+    def report_progress(self, job_id: str, progress: dict) -> bool:
+        """実行中ジョブの途中経過を更新し、中断要求の有無を返す。
+
+        ワーカはこの戻り値（cancel_requested）を見て実行を中断する。
+        """
+        job = self._running.get(job_id)
+        if job is None:
+            return False
+        job.progress = progress
+        job.updated_at = time.time()
+        return job.cancel_requested
+
+    def cancel(self, job_id: str) -> str:
+        """queued はその場でキャンセル、running は中断要求を立てる。
+
+        戻り値: "canceled"（queued を除去） / "cancel_requested"（running へ要求） /
+                "not_found"。
+        """
         if job_id in self._pending:
             self._pending.remove(job_id)
             job = self._jobs[job_id]
             job.state = JobState.CANCELED
             job.updated_at = time.time()
             self._push_history(job)
-            return True
-        return False
+            return "canceled"
+        job = self._running.get(job_id)
+        if job is not None:
+            job.cancel_requested = True
+            job.updated_at = time.time()
+            return "cancel_requested"
+        return "not_found"
+
+    def announce_methods(self, methods: list[str]) -> None:
+        """ワーカが実行可能なメソッド名を申告する（コントロールページの選択肢に反映）。"""
+        self._worker_methods.update(methods)
+
+    def known_methods(self) -> set[str]:
+        """サーバ登録 + ワーカ申告のメソッド集合（enqueue 検証・一覧表示に使う）。"""
+        return set(registry().keys()) | self._worker_methods
 
     def clear_history(self) -> None:
         self._history.clear()
@@ -191,7 +229,7 @@ class JobStore:
         return {
             "autorun": self._autorun,
             "tick": self._tick,
-            "methods": sorted(registry().keys()),
+            "methods": sorted(self.known_methods()),
             "pending": [self._jobs[j].to_dict() for j in self._pending],
             "running": [j.to_dict() for j in self._running.values()],
             "history": [j.to_dict() for j in self._history],

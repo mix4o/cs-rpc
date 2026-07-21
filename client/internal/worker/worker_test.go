@@ -3,26 +3,65 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 )
 
+var noEmit Emit = func(map[string]any) bool { return false }
+
 func TestHandlers(t *testing.T) {
 	ctx := context.Background()
-	if out, e := hEcho(ctx, json.RawMessage(`{"message":"hi"}`)); e != nil || out.(map[string]string)["message"] != "hi" {
+	if out, e := hEcho(ctx, json.RawMessage(`{"message":"hi"}`), noEmit); e != nil || out.(map[string]string)["message"] != "hi" {
 		t.Fatalf("echo: %v %v", out, e)
 	}
-	if out, e := hAdd(ctx, json.RawMessage(`{"a":2,"b":3}`)); e != nil || out.(map[string]float64)["result"] != 5 {
+	if out, e := hAdd(ctx, json.RawMessage(`{"a":2,"b":3}`), noEmit); e != nil || out.(map[string]float64)["result"] != 5 {
 		t.Fatalf("add: %v %v", out, e)
 	}
-	if _, e := hDiv(ctx, json.RawMessage(`{"a":1,"b":0}`)); e == nil || e.Code != 1001 {
+	if _, e := hDiv(ctx, json.RawMessage(`{"a":1,"b":0}`), noEmit); e == nil || e.Code != 1001 {
 		t.Fatalf("div-by-zero should error 1001, got %v", e)
 	}
-	if out, e := hSysInfo(ctx, nil); e != nil || out.(map[string]any)["executedOn"] != "client" {
+	if out, e := hSysInfo(ctx, nil, noEmit); e != nil || out.(map[string]any)["executedOn"] != "client" {
 		t.Fatalf("sysinfo: %v %v", out, e)
+	}
+}
+
+func TestFindMatches(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"a.conf", "b.conf", "c.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	params, _ := json.Marshal(map[string]any{"path": dir, "name": "*.conf"})
+	out, herr := hFind(context.Background(), params, noEmit)
+	if herr != nil {
+		t.Fatalf("find error: %v", herr)
+	}
+	m := out.(map[string]any)
+	if m["matched"].(int) != 2 {
+		t.Fatalf("expected 2 matches, got %v", m["matched"])
+	}
+}
+
+func TestFindCancel(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 50; i++ {
+		_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%d.log", i)), []byte("x"), 0o644)
+	}
+	// 最初の emit で即キャンセルを要求する。ただし emit は約300ms間隔でしか
+	// 呼ばれないので、ここでは ctx キャンセルで確実に止める経路を検証する。
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 即キャンセル
+	params, _ := json.Marshal(map[string]any{"path": dir, "name": "*.log"})
+	_, herr := hFind(ctx, params, noEmit)
+	if herr == nil || !herr.Canceled {
+		t.Fatalf("expected canceled, got %v", herr)
 	}
 }
 
@@ -39,6 +78,7 @@ func newFakeSink() *fakeSink {
 }
 
 func (f *fakeSink) CommandReceived(seq int, id, method string, params json.RawMessage) {}
+func (f *fakeSink) CommandProgress(id string, progress map[string]any)                 {}
 func (f *fakeSink) CommandFinished(id, state string, result json.RawMessage, errMsg string) {
 	f.mu.Lock()
 	f.finished[id] = state
@@ -59,8 +99,8 @@ func oneJobServer(t *testing.T, job Job) (*httptest.Server, *[]string) {
 	completed := []string{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/control/autorun":
-			w.Write([]byte(`{"autorun":false}`))
+		case "/control/autorun", "/control/announce":
+			w.Write([]byte(`{}`))
 		case "/control/lease":
 			mu.Lock()
 			defer mu.Unlock()

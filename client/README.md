@@ -101,7 +101,20 @@ CGO_ENABLED=1 go build -tags webview -o csrpc ./cmd/csrpc
 | `--open` | `true` | 既定ブラウザで GUI を開く |
 
 ローカル実行できるコマンド: `echo` / `math.add` / `math.div` / `sys.info` / `sys.time` /
-`demo.sleep`（running 状態を見せるデモ用）。追加は `internal/worker/handlers.go`。
+`demo.sleep`（running 状態を見せるデモ用）/ `find`。追加は `internal/worker/handlers.go`。
+ワーカは起動時に自分の対応メソッドをサーバへ申告するので、コントロールページの
+メソッド選択に自動で現れる。
+
+### 長時間コマンド（find）と進捗・キャンセル
+`find`（params 例: `{"path":"/etc","name":"*.conf"}`）は時間がかかり得るため、
+非同期＋ポーリング方式で扱う:
+
+- ワーカは実行中、約300ms間隔で **進捗 `{scanned, matched}`** をサーバへ報告する。
+  コントロールページと GUI の左ペインに「running … scanned N, matched M」が刻々と出るので
+  「固まっていない」ことが分かる（受け取り→即応答ではなく、逐次経過が見える）。
+- 実行はジョブごとに goroutine で回すため、長い find の最中もワーカは他ジョブを受けられる。
+- コントロールページの running 行に出る **「中断」ボタン**でキャンセル要求 → ワーカは次の
+  進捗報告の応答でそれを検知し、`ctx` を止めて中断（`canceled`、途中までの結果を保持）。
 
 ## 共通フラグ / 環境変数
 | フラグ | 環境変数 | 既定 |

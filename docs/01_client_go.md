@@ -3,7 +3,11 @@
 Windows / Linux で単一バイナリとして動作する RPC クライアント。
 CLI としても、他プログラムから使うライブラリとしても使えるようにする。
 
-- 関連: [全体設計書](00_overview.md) / [サーバ設計書](02_server_python.md)
+- 関連: [全体設計書](00_overview.md) / [サーバ設計書](02_server_python.md) / [プロトコル&コマンド仕様](03_protocol_and_commands.md)
+
+> 本書は `csrpc` の CLI/ライブラリ（データプレーン）の設計。`worker` サブコマンド・
+> ローカルハンドラ（`find` 等）・進捗/キャンセルの仕様は
+> [03_protocol_and_commands.md](03_protocol_and_commands.md) を参照。
 
 ---
 

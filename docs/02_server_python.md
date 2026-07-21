@@ -3,7 +3,11 @@
 RPC リクエストを受け、登録されたコマンド（ハンドラ）へディスパッチして
 結果を返すサーバ。「変更しやすさ」＝ハンドラ追加の容易さを最優先する。
 
-- 関連: [全体設計書](00_overview.md) / [クライアント設計書](01_client_go.md)
+- 関連: [全体設計書](00_overview.md) / [クライアント設計書](01_client_go.md) / [プロトコル&コマンド仕様](03_protocol_and_commands.md)
+
+> 本書は `/rpc`（同期 RPC）サーバの設計。コントロールページ・ジョブキュー・
+> `/control/*` API（enqueue/lease/progress/cancel/announce）の仕様は
+> [03_protocol_and_commands.md](03_protocol_and_commands.md) を参照。
 
 ---
 

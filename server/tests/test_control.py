@@ -19,6 +19,39 @@ def test_index_page():
         assert "cs-rpc" in r.text
 
 
+def test_announce_enables_worker_method_and_progress_cancel():
+    with TestClient(app) as client:
+        _disable_autorun(client)
+        # ワーカが find を申告 → enqueue が許可され、methods 一覧にも載る
+        client.post("/control/announce", json={"worker": "w1", "methods": ["find"]})
+        assert "find" in client.get("/control/state").json()["methods"]
+
+        jid = client.post("/control/enqueue",
+                          json={"method": "find", "params": {"path": "/tmp"}}).json()["id"]
+        # lease して running に
+        leased = client.post("/control/lease", json={"worker": "w1"}).json()
+        assert leased["id"] == jid
+
+        # 進捗報告 → 中断要求はまだ無い
+        r = client.post("/control/progress",
+                        json={"id": jid, "progress": {"scanned": 10, "matched": 2}})
+        assert r.json()["cancel"] is False
+        # 状態に progress が反映される
+        running = client.get("/control/state").json()["running"]
+        assert running[0]["progress"] == {"scanned": 10, "matched": 2}
+
+        # 実行中ジョブをキャンセル要求
+        c = client.post("/control/cancel", json={"id": jid})
+        assert c.json()["result"] == "cancel_requested"
+        # 次の進捗報告で cancel=True が返る
+        assert client.post("/control/progress",
+                           json={"id": jid, "progress": {"scanned": 20}}).json()["cancel"] is True
+
+        # ワーカが canceled として完了報告
+        done = client.post("/control/complete", json={"id": jid, "canceled": True}).json()
+        assert done["state"] == "canceled"
+
+
 def test_run_now_ok():
     with TestClient(app) as client:
         r = client.post("/control/run-now",

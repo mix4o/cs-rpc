@@ -70,14 +70,39 @@ func (c *Control) Lease(ctx context.Context, worker string) (*Job, error) {
 	return &job, nil
 }
 
-// Complete は結果またはエラーを報告する。
-func (c *Control) Complete(ctx context.Context, id string, result json.RawMessage, e *ErrObj) error {
+// Complete は結果またはエラーを報告する。canceled=true で中断完了として報告。
+func (c *Control) Complete(ctx context.Context, id string, result json.RawMessage, e *ErrObj, canceled bool) error {
 	payload := struct {
-		ID     string          `json:"id"`
-		Result json.RawMessage `json:"result,omitempty"`
-		Error  *ErrObj         `json:"error,omitempty"`
-	}{ID: id, Result: result, Error: e}
+		ID       string          `json:"id"`
+		Result   json.RawMessage `json:"result,omitempty"`
+		Error    *ErrObj         `json:"error,omitempty"`
+		Canceled bool            `json:"canceled,omitempty"`
+	}{ID: id, Result: result, Error: e, Canceled: canceled}
 	_, err := c.post(ctx, "/control/complete", payload)
+	return err
+}
+
+// Progress は途中経過を報告し、サーバからの中断要求(cancel)有無を返す。
+func (c *Control) Progress(ctx context.Context, id string, progress map[string]any) (bool, error) {
+	status, body, err := c.postRaw(ctx, "/control/progress",
+		map[string]any{"id": id, "progress": progress})
+	if err != nil {
+		return false, err
+	}
+	if status >= 300 {
+		return false, fmt.Errorf("progress: status %d: %s", status, body)
+	}
+	var r struct {
+		Cancel bool `json:"cancel"`
+	}
+	_ = json.Unmarshal(body, &r)
+	return r.Cancel, nil
+}
+
+// Announce は自ワーカが実行可能なメソッド名をサーバへ申告する。
+func (c *Control) Announce(ctx context.Context, worker string, methods []string) error {
+	_, err := c.post(ctx, "/control/announce",
+		map[string]any{"worker": worker, "methods": methods})
 	return err
 }
 

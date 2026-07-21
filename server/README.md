@@ -47,10 +47,17 @@ curl -s localhost:8080/rpc \
 | POST | `/control/run-now` | 即時実行して結果を返す |
 | POST | `/control/step` | queued を1件サーバ実行 |
 | POST | `/control/autorun` | `{enabled}` で自動実行 ON/OFF |
-| POST | `/control/cancel` | `{id}` で queued をキャンセル |
+| POST | `/control/cancel` | `{id}`。queued は除去、running は中断要求を立てる |
 | POST | `/control/clear` | 履歴クリア |
 | POST | `/control/lease` | （外部ワーカ用）次の queued を lease、無ければ 204 |
-| POST | `/control/complete` | （外部ワーカ用）`{id, result?, error?}` を報告 |
+| POST | `/control/complete` | （外部ワーカ用）`{id, result?, error?, canceled?}` を報告 |
+| POST | `/control/progress` | （外部ワーカ用）`{id, progress}` を報告。応答 `{cancel}` で中断要求を返す |
+| POST | `/control/announce` | （外部ワーカ用）`{worker, methods}` を申告し、選択肢に反映 |
+
+長時間コマンド（例: ワーカの `find`）は、ワーカが実行中に `/control/progress` で
+途中経過（`{scanned, matched}` 等）を定期報告し、コントロールページに逐次表示される。
+running 行の「中断」ボタンは `/control/cancel` を呼び、ワーカは次の progress 応答で
+中断要求を検知して停止する（`canceled`、途中結果を保持）。
 
 ### 外部ワーカで実行する（分散構成のデモ）
 autorun を OFF にし、`/control/lease` → 実行 → `/control/complete` を回す

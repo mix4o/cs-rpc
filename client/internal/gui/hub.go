@@ -19,9 +19,10 @@ type CommandEvent struct {
 	ID         string          `json:"id"`
 	Method     string          `json:"method"`
 	Params     json.RawMessage `json:"params,omitempty"`
-	State      string          `json:"state"` // running | done | error
+	State      string          `json:"state"` // running | done | error | canceled
 	Result     json.RawMessage `json:"result,omitempty"`
 	Error      string          `json:"error,omitempty"`
+	Progress   map[string]any  `json:"progress,omitempty"` // 実行中の途中経過
 	ReceivedAt string          `json:"receivedAt"`
 	DoneAt     string          `json:"doneAt,omitempty"`
 	ElapsedMs  int64           `json:"elapsedMs,omitempty"`
@@ -102,7 +103,19 @@ func (h *Hub) CommandReceived(seq int, id, method string, params json.RawMessage
 	h.broadcast(envelope{Type: "command", Data: ev})
 }
 
-// CommandFinished は完了（done/error）を記録・配信する。
+// CommandProgress は実行中ジョブの途中経過を更新・配信する。
+func (h *Hub) CommandProgress(id string, progress map[string]any) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	ev := h.cmdIndex[id]
+	if ev == nil {
+		return
+	}
+	ev.Progress = progress
+	h.broadcast(envelope{Type: "command", Data: ev})
+}
+
+// CommandFinished は完了（done/error/canceled）を記録・配信する。
 func (h *Hub) CommandFinished(id, state string, result json.RawMessage, errMsg string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
