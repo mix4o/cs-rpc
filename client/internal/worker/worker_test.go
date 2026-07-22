@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,7 +13,11 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/image/bmp"
 )
+
+var noColor = color.RGBA{1, 2, 3, 255} // parseColor の既定値検証用
 
 var noEmit Emit = func(map[string]any) bool { return false }
 
@@ -205,6 +210,49 @@ func TestPutfileBase64(t *testing.T) {
 	got, _ := os.ReadFile(filepath.Join(base, "b.bin"))
 	if string(got) != "hello" {
 		t.Fatalf("base64 decode wrong: %q", got)
+	}
+}
+
+func TestParseColor(t *testing.T) {
+	if c := parseColor("#ff0000", noColor); c.R != 255 || c.G != 0 || c.B != 0 {
+		t.Fatalf("#ff0000 -> %v", c)
+	}
+	if c := parseColor("0 128 255", noColor); c.R != 0 || c.G != 128 || c.B != 255 {
+		t.Fatalf("0 128 255 -> %v", c)
+	}
+	if c := parseColor("", noColor); c != noColor {
+		t.Fatalf("empty should return default, got %v", c)
+	}
+}
+
+func TestGenerateWallpaperImage(t *testing.T) {
+	path, err := generateWallpaperImage("DEMO\nhacked (demo)", "#101010", 240, 160)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	defer os.Remove(path)
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	img, err := bmp.Decode(f)
+	if err != nil {
+		t.Fatalf("decode bmp: %v", err)
+	}
+	if img.Bounds().Dx() != 240 || img.Bounds().Dy() != 160 {
+		t.Fatalf("unexpected size: %v", img.Bounds())
+	}
+}
+
+func TestWallpaperUnsupportedOnNonWindows(t *testing.T) {
+	if wallpaperSupported {
+		t.Skip("windows: skip unsupported-path test")
+	}
+	params, _ := json.Marshal(map[string]any{"text": "x"})
+	_, herr := hWallpaper(context.Background(), params, noEmit)
+	if herr == nil || herr.Code != errWallpaperUnsupported {
+		t.Fatalf("expected unsupported(%d), got %v", errWallpaperUnsupported, herr)
 	}
 }
 

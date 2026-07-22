@@ -44,6 +44,7 @@ cs-rpc の通信は目的の異なる2系統に分かれる。
 | `exec` | `{program, args?, wait?}` | 下記参照 | ― | ✓ | ― | **外部プログラム実行**。allowlist 必須・既定無効（2.4・⚠️セキュリティ） |
 | `script` | `{interpreter?, script, args?, wait?}` | 下記参照 | ― | ✓ | ― | **スクリプト実行**（PowerShell 等）。一時ファイル化して実行。allowlist 必須（2.5） |
 | `putfile` | `{path, content, encoding?, mode?, overwrite?}` | `{path, bytes}` | ― | ✓ | ― | **ファイル書き込み**（テストスクリプト配置等）。`CSRPC_PUTFILE_DIR` 必須（2.6） |
+| `wallpaper` | `{text?, color?, path?, restore?}` | `{set/restored, previous}` | ― | ✓ | ― | **壁紙変更**（デモ用の無害・可逆な"目立つ"効果）。Windows のみ（2.7） |
 
 - 「サーバ」= サーバ側 Python ハンドラに登録済み（`run-now`/`step`/autorun で実行される）。
 - 「ワーカ」= Go クライアントの `worker` がローカル実行できる（enqueue → lease で実行）。
@@ -187,7 +188,34 @@ result: `{ "path": "/abs/path/t.ps1", "bytes": 15 }`
 >
 > 例: `CSRPC_PUTFILE_DIR=C:\csrpc-tests` → `path:"t.ps1"` は `C:\csrpc-tests\t.ps1` に書かれる。
 
-### 2.7 エラー
+### 2.7 `wallpaper`（壁紙変更・デモ用）
+デスクトップの壁紙を変更する。サイバー攻撃デモで「攻撃者にコントロールされている」ことを
+**実害なく・目立つ形で**見せるための効果（`text` を渡すとクライアント側で大きな文字入り画像を
+生成して壁紙にする）。**Windows 専用**。無害・可逆なので既定で有効（環境変数ゲートなし）。
+
+リクエスト params:
+```json
+{ "text": "DEMO: このPCは遠隔操作されています\n(演習)", "color": "#8B0000" }
+```
+| フィールド | 型 | 既定 | 意味 |
+| --- | --- | --- | --- |
+| `text` | string | `""` | 壁紙に載せる文字（複数行可）。指定時は画像を自動生成 |
+| `color` | string | `#8B0000`(暗赤) | 背景色（`#rrggbb` または `r g b`） |
+| `path` | string | — | 既存画像ファイルを壁紙にする（`text` より優先度低、`path` 指定時はそれを使用） |
+| `width`/`height` | int | 1920/1080 | 生成画像のサイズ |
+| `restore` | bool | `false` | **変更前の壁紙に戻す**（最初の変更時に自動保存） |
+
+result: `{ "set": "<生成/指定パス>", "previous": "<元の壁紙>" }`（restore 時は `{ "restored": "<元>" }`）
+
+- 実装: `text`/`color` から BMP を生成 → `user32!SystemParametersInfoW`(SPI_SETDESKWALLPAPER) で設定。
+- 元の壁紙は初回変更時に保存し、`{"restore":true}` で復元できる（＝実害なし）。
+- Windows 以外のワーカでは `error 1008`（非対応）。
+
+> デモの流れ例: ワーカ接続 → コントロールページで `wallpaper` に
+> `{"text":"YOU'VE BEEN PWNED (demo)"}` を投入 → 学生のデスクトップが即変化 →
+> `{"restore":true}` で元に戻す。「通信や基礎を知らなくても一目で伝わる」効果。
+
+### 2.8 エラー
 `result` の代わりに `error`（JSON-RPC 準拠）で返す。コード体系は
 [00_overview.md 3.4](00_overview.md) と一致。
 
@@ -203,6 +231,8 @@ result: `{ "path": "/abs/path/t.ps1", "bytes": 15 }`
 | `1005` | （`putfile`）`CSRPC_PUTFILE_DIR` 未設定で無効 |
 | `1006` | （`putfile`）許可ディレクトリ外への書き込み |
 | `1007` | （`putfile`）書き込み失敗 |
+| `1008` | （`wallpaper`）当該OSでは非対応（Windows 専用） |
+| `1009` | （`wallpaper`）生成/設定/復元の失敗 |
 
 ---
 

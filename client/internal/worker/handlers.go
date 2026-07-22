@@ -43,6 +43,7 @@ var localHandlers = map[string]Handler{
 	"exec":       hExec,
 	"script":     hScript,
 	"putfile":    hPutfile,
+	"wallpaper":  hWallpaper,
 }
 
 func Methods() []string {

@@ -150,6 +150,18 @@ $env:CSRPC_EXEC_ALLOW  = "powershell"      # 配置後に実行するなら
 `{"path":"t.ps1","content":"Write-Output hi"}` → `C:\csrpc-tests\t.ps1` に配置。`base64`
 エンコード（`encoding:"base64"`）でバイナリも配置可。
 
+### wallpaper（壁紙変更・デモ用／Windows専用）
+`wallpaper`（`{text?, color?, path?, restore?}`）はデスクトップ壁紙を変更する。サイバー攻撃
+デモで「攻撃者に操作されている」ことを**実害なく・目立つ形で**見せるための効果。`text` を
+渡すとクライアント側で大きな文字入り画像を生成して壁紙にする（外部ファイル不要）。
+
+```jsonc
+{"text":"DEMO: このPCは遠隔操作されています\n(演習)", "color":"#8B0000"}  // 変更
+{"restore":true}                                                       // 元に戻す
+```
+- 元の壁紙は初回変更時に自動保存され、`{"restore":true}` で復元＝**完全に可逆**。
+- 環境変数ゲートなし（無害なため既定で有効）。Windows 以外では `error 1008`。
+
 ### 長時間コマンド（find）と進捗・キャンセル
 `find`（params 例: `{"path":"/etc","name":"*.conf"}`）は時間がかかり得るため、
 非同期＋ポーリング方式で扱う:
