@@ -19,6 +19,50 @@ def test_index_page():
         assert "cs-rpc" in r.text
 
 
+def test_presets_crud_and_run(tmp_path):
+    from app import web
+    # 永続化先をテンポラリに退避（実ファイルを汚さない）
+    web.presets._path = str(tmp_path / "presets.json")
+    web.presets._presets = {}
+    with TestClient(app) as client:
+        _disable_autorun(client)
+        preset = {
+            "name": "demo-pwn",
+            "description": "壁紙変更→戻す",
+            "commands": [
+                {"method": "wallpaper", "params": {"text": "PWNED (demo)"}},
+                {"method": "echo", "params": {"message": "done"}},
+            ],
+        }
+        assert client.post("/control/presets", json=preset).status_code == 200
+        # 一覧・永続化ファイルの存在
+        names = [p["name"] for p in client.get("/control/presets").json()["presets"]]
+        assert "demo-pwn" in names
+        assert (tmp_path / "presets.json").exists()
+
+        # 実行 → コマンド数ぶんキューに入る
+        r = client.post("/control/presets/run", json={"name": "demo-pwn"}).json()
+        assert r["enqueued"] == 2
+        pending = client.get("/control/state").json()["pending"]
+        assert [j["method"] for j in pending[-2:]] == ["wallpaper", "echo"]
+        # 後続テストを汚さないよう投入分を取り消す（共有 store のため）
+        for jid in r["ids"]:
+            client.post("/control/cancel", json={"id": jid})
+
+        # 削除
+        assert client.post("/control/presets/delete", json={"name": "demo-pwn"}).status_code == 200
+        assert client.post("/control/presets/run", json={"name": "demo-pwn"}).status_code == 404
+
+
+def test_preset_validation_rejects_empty_commands(tmp_path):
+    from app import web
+    web.presets._path = str(tmp_path / "presets.json")
+    web.presets._presets = {}
+    with TestClient(app) as client:
+        r = client.post("/control/presets", json={"name": "x", "commands": []})
+        assert r.status_code in (400, 422)
+
+
 def test_announce_enables_worker_method_and_progress_cancel():
     with TestClient(app) as client:
         _disable_autorun(client)

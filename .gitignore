@@ -6,6 +6,7 @@
 *.out
 
 # --- Python ---
+presets.json
 __pycache__/
 *.py[cod]
 *.egg-info/

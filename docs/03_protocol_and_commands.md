@@ -273,6 +273,14 @@ enqueue        lease            complete / cancel
 | POST | `/control/autorun` | `{enabled: bool}` | `{autorun}` | サーバ自動実行の ON/OFF |
 | POST | `/control/cancel` | `{id}` | `{id, result}` | queued は除去(`canceled`)、running は中断要求(`cancel_requested`) |
 | POST | `/control/clear` | ― | `{cleared}` | 履歴クリア |
+| GET | `/control/presets` | ― | `{presets:[...]}` | プリセット一覧 |
+| POST | `/control/presets` | `{name, description?, commands:[{method,params}]}` | 保存したプリセット | プリセット登録/更新（ファイル永続化） |
+| POST | `/control/presets/run` | `{name}` | `{preset, enqueued, ids}` | プリセットの全コマンドを順にキュー投入 |
+| POST | `/control/presets/delete` | `{name}` | `{deleted}` | プリセット削除 |
+
+**プリセット**: 複数コマンド（`[{method, params}, ...]`）を名前付きで保存し、`run` で
+一括投入する。JSON ファイル（`CSRPC_PRESETS_FILE`、既定 `presets.json`）に永続化され、
+サーバ再起動後も残る。デモの一連の操作（例: 壁紙変更→戻す、配置→実行）を1クリックで再現できる。
 
 ※スナップショット:
 ```json

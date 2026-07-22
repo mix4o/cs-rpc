@@ -73,19 +73,40 @@
 </header>
 
 <main>
-  <!-- 左: コマンド挿入 -->
-  <section class="panel">
-    <h2>次に実行するコマンドを挿入</h2>
-    <label>method</label>
-    <select id="method"></select>
-    <label>params (JSON)</label>
-    <textarea id="params" spellcheck="false" placeholder='{"message":"hello"}'></textarea>
-    <div class="hint" id="paramsHint"></div>
-    <div class="row">
-      <button id="enqueueBtn">キューに挿入 (enqueue)</button>
-      <button id="runNowBtn" class="ghost">即時実行 (run now)</button>
+  <!-- 左: コマンド挿入 + プリセット -->
+  <section style="display:flex; flex-direction:column; gap:16px;">
+    <div class="panel">
+      <h2>次に実行するコマンドを挿入</h2>
+      <label>method</label>
+      <select id="method"></select>
+      <label>params (JSON)</label>
+      <textarea id="params" spellcheck="false" placeholder='{"message":"hello"}'></textarea>
+      <div class="hint" id="paramsHint"></div>
+      <div class="row">
+        <button id="enqueueBtn">キューに挿入 (enqueue)</button>
+        <button id="runNowBtn" class="ghost">即時実行 (run now)</button>
+      </div>
+      <div class="hint" id="runNowResult"></div>
     </div>
-    <div class="hint" id="runNowResult"></div>
+
+    <div class="panel">
+      <h2>プリセット（複数コマンドをまとめて実行）</h2>
+      <table>
+        <thead><tr><th>名前</th><th>コマンド数</th><th></th></tr></thead>
+        <tbody id="presetBody"></tbody>
+      </table>
+      <hr style="border:0;border-top:1px solid var(--line);margin:12px 0;">
+      <label>プリセット名</label>
+      <input id="presetName" spellcheck="false" placeholder="例: demo-pwn">
+      <label>コマンド列（JSON配列） <span class="muted">[{"method","params"}, ...]</span></label>
+      <textarea id="presetCmds" spellcheck="false" style="min-height:110px"
+        placeholder='[{"method":"wallpaper","params":{"text":"PWNED (demo)"}},{"method":"wallpaper","params":{"restore":true}}]'></textarea>
+      <div class="row">
+        <button id="presetAddCur" class="ghost">＋現在のコマンドを追加</button>
+        <button id="presetSave">保存</button>
+      </div>
+      <div class="hint" id="presetMsg"></div>
+    </div>
   </section>
 
   <!-- 右: キューと履歴 -->
@@ -363,6 +384,63 @@ function toggleExpand(id, btn) {
   markOverflow();
 }
 
+// ---- プリセット ----
+let presetsCache = {};
+async function loadPresets() {
+  let list;
+  try { list = (await (await fetch("/control/presets")).json()).presets; } catch (e) { return; }
+  presetsCache = {};
+  const tb = $("presetBody");
+  if (!list.length) { tb.innerHTML = `<tr><td colspan="3" class="empty">（未登録）</td></tr>`; return; }
+  tb.innerHTML = list.map(p => {
+    presetsCache[p.name] = p;
+    return `<tr><td><code>${esc(p.name)}</code>${p.description ? `<div class="muted" style="font-size:11px">${esc(p.description)}</div>` : ""}</td>
+      <td>${p.commands.length}</td>
+      <td class="rowbtns">
+        <button class="small" onclick="runPreset('${esc(p.name)}')">実行</button>
+        <button class="ghost small" onclick="editPreset('${esc(p.name)}')">編集</button>
+        <button class="ghost small" onclick="deletePreset('${esc(p.name)}')">削除</button></td></tr>`;
+  }).join("");
+}
+async function runPreset(name) {
+  const r = await api("/control/presets/run", { name });
+  const d = await r.json();
+  note("presetMsg", r.ok ? `「${name}」を投入（${d.enqueued}件）` : (d.detail || "実行失敗"), !r.ok);
+  refresh();
+}
+async function deletePreset(name) {
+  if (!confirm(`プリセット「${name}」を削除しますか？`)) return;
+  await api("/control/presets/delete", { name });
+  loadPresets();
+}
+function editPreset(name) {
+  const p = presetsCache[name]; if (!p) return;
+  $("presetName").value = p.name;
+  $("presetCmds").value = JSON.stringify(p.commands, null, 2);
+  note("presetMsg", `「${name}」を編集中`, false);
+}
+async function savePreset() {
+  const name = $("presetName").value.trim();
+  if (!name) return note("presetMsg", "プリセット名を入力してください", true);
+  let commands;
+  try { commands = JSON.parse($("presetCmds").value); } catch (e) { return note("presetMsg", "コマンド列が不正な JSON です", true); }
+  if (!Array.isArray(commands) || !commands.length) return note("presetMsg", "コマンド列は空でない配列にしてください", true);
+  const r = await api("/control/presets", { name, commands });
+  if (!r.ok) { const d = await r.json().catch(() => ({})); return note("presetMsg", d.detail || "保存失敗", true); }
+  note("presetMsg", `「${name}」を保存しました`, false);
+  loadPresets();
+}
+function addCurrentToPreset() {
+  let params;
+  try { params = parseParams(); } catch (e) { return note("presetMsg", "params が不正な JSON です", true); }
+  let arr = [];
+  const cur = $("presetCmds").value.trim();
+  if (cur) { try { arr = JSON.parse(cur); if (!Array.isArray(arr)) arr = []; } catch (e) { arr = []; } }
+  arr.push({ method: $("method").value, params });
+  $("presetCmds").value = JSON.stringify(arr, null, 2);
+  note("presetMsg", `「${$("method").value}」を追加`, false);
+}
+
 async function refresh() {
   let s;
   try { s = await (await fetch("/control/state")).json(); } catch (e) { return; }
@@ -393,6 +471,8 @@ $("autorunBtn").onclick = toggleAutorun;
 $("stepBtn").onclick = step;
 $("clearBtn").onclick = clearHistory;
 $("method").addEventListener("change", updateHint);
+$("presetSave").onclick = savePreset;
+$("presetAddCur").onclick = addCurrentToPreset;
 $("detailClose").onclick = closeDetail;
 $("viewText").onclick = () => setDetailView("text");
 $("viewJson").onclick = () => setDetailView("json");
@@ -400,6 +480,7 @@ $("detailCopy").onclick = async (e) => flashBtn(e.target, await copyText($("deta
 setInterval(() => { $("clock").textContent = new Date().toLocaleTimeString(); }, 1000);
 setInterval(refresh, 1000);
 refresh();
+loadPresets();
 </script>
 </body>
 </html>

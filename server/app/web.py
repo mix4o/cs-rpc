@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from app.control import store
 from app.dispatcher import dispatch, registry
+from app.presets import PresetError, presets
 from app.protocol import RpcException
 
 router = APIRouter()
@@ -63,6 +64,21 @@ class ProgressBody(BaseModel):
 class AnnounceBody(BaseModel):
     worker: str = "worker"
     methods: list[str] = []
+
+
+class PresetCommand(BaseModel):
+    method: str
+    params: dict | list | None = None
+
+
+class PresetBody(BaseModel):
+    name: str
+    description: str = ""
+    commands: list[PresetCommand]
+
+
+class NameBody(BaseModel):
+    name: str
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -154,3 +170,37 @@ async def announce(body: AnnounceBody) -> dict:
     """ワーカが実行可能メソッドを申告（コントロールページの選択肢に反映）。"""
     store.announce_methods(body.methods)
     return {"known": sorted(store.known_methods())}
+
+
+# --- プリセット（複数コマンドをまとめて登録・一括投入） ---
+@router.get("/control/presets")
+async def list_presets() -> dict:
+    return {"presets": presets.list()}
+
+
+@router.post("/control/presets")
+async def save_preset(body: PresetBody) -> dict:
+    try:
+        return presets.put(body.model_dump())
+    except PresetError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/control/presets/delete")
+async def delete_preset(body: NameBody) -> dict:
+    if not presets.delete(body.name):
+        raise HTTPException(status_code=404, detail="preset not found")
+    return {"deleted": body.name}
+
+
+@router.post("/control/presets/run")
+async def run_preset(body: NameBody) -> dict:
+    """プリセットの全コマンドを順にキューへ投入する。"""
+    preset = presets.get(body.name)
+    if preset is None:
+        raise HTTPException(status_code=404, detail="preset not found")
+    ids = []
+    for c in preset["commands"]:
+        job = store.enqueue(c["method"], c.get("params"), source=f"preset:{body.name}")
+        ids.append(job.id)
+    return {"preset": body.name, "enqueued": len(ids), "ids": ids}
