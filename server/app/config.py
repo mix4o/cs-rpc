@@ -47,7 +47,7 @@ class Settings:
     autorun: bool = True               # 起動時にサーバ自動実行を有効化するか
     autorun_tick: float = 0.7          # 自動実行ループの間隔（秒）＝状態遷移の可視化にも寄与
     history_limit: int = 100           # 実行履歴の保持件数
-    presets_file: str = "presets.json" # プリセットの永続化ファイル
+    presets_dir: str = "presets"       # プリセット保存ディレクトリ（1プリセット=1ファイル）
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -60,7 +60,7 @@ class Settings:
             autorun=_env_bool("CSRPC_AUTORUN", cls.autorun),
             autorun_tick=_env_float("CSRPC_AUTORUN_TICK", cls.autorun_tick),
             history_limit=_env_int("CSRPC_HISTORY_LIMIT", cls.history_limit),
-            presets_file=os.getenv("CSRPC_PRESETS_FILE", cls.presets_file),
+            presets_dir=os.getenv("CSRPC_PRESETS_DIR", cls.presets_dir),
         )
 
 

@@ -41,8 +41,18 @@ curl -s localhost:8080/rpc \
   全文を下部ドロワー（テキストエリア）に表示して選択コピーできる（大きな出力・
   スクリプトの stdout 向け）。非HTTPS/LAN でも動くよう execCommand フォールバックあり。
 - **プリセット**: 複数コマンドをまとめて名前付き登録し、「実行」で一括投入できる。
-  JSON ファイル（`CSRPC_PRESETS_FILE`、既定 `presets.json`）に永続化され再起動後も残る。
+  **1プリセット=1ファイル**でディレクトリ（`CSRPC_PRESETS_DIR`、既定 `presets/`）に保存され、
+  再起動後も残る。`presets/<名前>.json` を直接置くだけでも準備でき（「再読込」で反映）、
   「＋現在のコマンドを追加」で入力中の method/params をプリセットに足せる。
+
+  例: `presets/demo-pwn.json`
+  ```json
+  {"description": "壁紙を変えて戻す",
+   "commands": [
+     {"method": "wallpaper", "params": {"text": "PWNED (demo)"}},
+     {"method": "wallpaper", "params": {"restore": true}}
+   ]}
+  ```
 
 ### 制御 API
 | メソッド | パス | 用途 |

@@ -6,7 +6,7 @@
 *.out
 
 # --- Python ---
-presets.json
+/server/presets/
 __pycache__/
 *.py[cod]
 *.egg-info/

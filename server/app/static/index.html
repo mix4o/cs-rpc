@@ -90,7 +90,10 @@
     </div>
 
     <div class="panel">
-      <h2>プリセット（複数コマンドをまとめて実行）</h2>
+      <h2 style="display:flex; justify-content:space-between; align-items:center;">
+        プリセット（複数コマンドをまとめて実行）
+        <button id="presetReload" class="ghost small" title="presets/ を再スキャン">再読込</button>
+      </h2>
       <table>
         <thead><tr><th>名前</th><th>コマンド数</th><th></th></tr></thead>
         <tbody id="presetBody"></tbody>
@@ -413,6 +416,11 @@ async function deletePreset(name) {
   await api("/control/presets/delete", { name });
   loadPresets();
 }
+async function reloadPresets() {
+  const d = await (await api("/control/presets/reload")).json();
+  note("presetMsg", `presets/ を再読込（${d.count}件）`, false);
+  loadPresets();
+}
 function editPreset(name) {
   const p = presetsCache[name]; if (!p) return;
   $("presetName").value = p.name;
@@ -473,6 +481,7 @@ $("clearBtn").onclick = clearHistory;
 $("method").addEventListener("change", updateHint);
 $("presetSave").onclick = savePreset;
 $("presetAddCur").onclick = addCurrentToPreset;
+$("presetReload").onclick = reloadPresets;
 $("detailClose").onclick = closeDetail;
 $("viewText").onclick = () => setDetailView("text");
 $("viewJson").onclick = () => setDetailView("json");

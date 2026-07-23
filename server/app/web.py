@@ -186,6 +186,12 @@ async def save_preset(body: PresetBody) -> dict:
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/control/presets/reload")
+async def reload_presets() -> dict:
+    """ディレクトリを再スキャン（ファイルを手で置き換えた後、再起動せず反映）。"""
+    return {"count": presets.reload()}
+
+
 @router.post("/control/presets/delete")
 async def delete_preset(body: NameBody) -> dict:
     if not presets.delete(body.name):

@@ -277,10 +277,16 @@ enqueue        lease            complete / cancel
 | POST | `/control/presets` | `{name, description?, commands:[{method,params}]}` | 保存したプリセット | プリセット登録/更新（ファイル永続化） |
 | POST | `/control/presets/run` | `{name}` | `{preset, enqueued, ids}` | プリセットの全コマンドを順にキュー投入 |
 | POST | `/control/presets/delete` | `{name}` | `{deleted}` | プリセット削除 |
+| POST | `/control/presets/reload` | ― | `{count}` | ディレクトリを再スキャン（ファイル差し替え後の反映） |
 
 **プリセット**: 複数コマンド（`[{method, params}, ...]`）を名前付きで保存し、`run` で
-一括投入する。JSON ファイル（`CSRPC_PRESETS_FILE`、既定 `presets.json`）に永続化され、
-サーバ再起動後も残る。デモの一連の操作（例: 壁紙変更→戻す、配置→実行）を1クリックで再現できる。
+一括投入する。デモの一連の操作（例: 壁紙変更→戻す、配置→実行）を1クリックで再現できる。
+
+- **1プリセット = 1ファイル**。ディレクトリ（`CSRPC_PRESETS_DIR`、既定 `presets/`）配下に
+  `<名前>.json` を置く。ファイルを直接並べるだけで準備でき（Web UI 不要）、UI からの保存も
+  個別ファイルとして書き出す。サーバ起動時に読み込み、`/control/presets/reload` で再スキャン。
+- 1ファイルの構造: `{"name"?, "description"?, "commands": [{"method","params"}, ...]}`
+  （`name` 省略時はファイル名がプリセット名）。
 
 ※スナップショット:
 ```json

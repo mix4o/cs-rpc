@@ -19,11 +19,16 @@ def test_index_page():
         assert "cs-rpc" in r.text
 
 
-def test_presets_crud_and_run(tmp_path):
+def _use_temp_presets(tmp_path):
     from app import web
-    # 永続化先をテンポラリに退避（実ファイルを汚さない）
-    web.presets._path = str(tmp_path / "presets.json")
+    web.presets._dir = str(tmp_path / "presets")
     web.presets._presets = {}
+    web.presets._files = {}
+    return web
+
+
+def test_presets_crud_and_run(tmp_path):
+    web = _use_temp_presets(tmp_path)
     with TestClient(app) as client:
         _disable_autorun(client)
         preset = {
@@ -35,10 +40,10 @@ def test_presets_crud_and_run(tmp_path):
             ],
         }
         assert client.post("/control/presets", json=preset).status_code == 200
-        # 一覧・永続化ファイルの存在
+        # 一覧・1プリセット1ファイルで永続化されているか
         names = [p["name"] for p in client.get("/control/presets").json()["presets"]]
         assert "demo-pwn" in names
-        assert (tmp_path / "presets.json").exists()
+        assert (tmp_path / "presets" / "demo-pwn.json").exists()
 
         # 実行 → コマンド数ぶんキューに入る
         r = client.post("/control/presets/run", json={"name": "demo-pwn"}).json()
@@ -55,12 +60,26 @@ def test_presets_crud_and_run(tmp_path):
 
 
 def test_preset_validation_rejects_empty_commands(tmp_path):
-    from app import web
-    web.presets._path = str(tmp_path / "presets.json")
-    web.presets._presets = {}
+    _use_temp_presets(tmp_path)
     with TestClient(app) as client:
         r = client.post("/control/presets", json={"name": "x", "commands": []})
         assert r.status_code in (400, 422)
+
+
+def test_presets_load_one_file_per_preset(tmp_path):
+    import json as _json
+    web = _use_temp_presets(tmp_path)
+    d = tmp_path / "presets"
+    d.mkdir()
+    # name 省略 → ファイル名がプリセット名になる
+    (d / "recon.json").write_text(_json.dumps(
+        {"description": "info", "commands": [{"method": "sys.info", "params": None}]}),
+        encoding="utf-8")
+    assert web.presets.reload() == 1
+    with TestClient(app) as client:
+        presets = client.get("/control/presets").json()["presets"]
+        assert presets[0]["name"] == "recon"
+        assert presets[0]["commands"][0]["method"] == "sys.info"
 
 
 def test_announce_enables_worker_method_and_progress_cancel():
