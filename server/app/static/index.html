@@ -101,9 +101,10 @@
       <hr style="border:0;border-top:1px solid var(--line);margin:12px 0;">
       <label>プリセット名</label>
       <input id="presetName" spellcheck="false" placeholder="例: demo-pwn">
-      <label>コマンド列（JSON配列） <span class="muted">[{"method","params"}, ...]</span></label>
-      <textarea id="presetCmds" spellcheck="false" style="min-height:110px"
-        placeholder='[{"method":"wallpaper","params":{"text":"PWNED (demo)"}},{"method":"wallpaper","params":{"restore":true}}]'></textarea>
+      <label>コマンド列（JSON配列） <span class="muted">{"method","params"} または制御 {"wait":秒}</span></label>
+      <textarea id="presetCmds" spellcheck="false" style="min-height:120px"
+        placeholder='[{"method":"wallpaper","params":{"text":"PWNED (demo)"}},{"wait":5},{"method":"wallpaper","params":{"restore":true}}]'></textarea>
+      <div class="hint">※ {"wait":秒} はクライアントに送らずサーバ側で待機する制御ステップ。各コマンドは完了を待って次へ進む。</div>
       <div class="row">
         <button id="presetAddCur" class="ghost">＋現在のコマンドを追加</button>
         <button id="presetSave">保存</button>
@@ -408,7 +409,7 @@ async function loadPresets() {
 async function runPreset(name) {
   const r = await api("/control/presets/run", { name });
   const d = await r.json();
-  note("presetMsg", r.ok ? `「${name}」を投入（${d.enqueued}件）` : (d.detail || "実行失敗"), !r.ok);
+  note("presetMsg", r.ok ? `「${name}」を開始（${d.commands}コマンド / 待機${d.waits}）` : (d.detail || "実行失敗"), !r.ok);
   refresh();
 }
 async function deletePreset(name) {

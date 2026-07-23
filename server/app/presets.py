@@ -36,8 +36,17 @@ def _validate(preset: dict) -> dict:
         raise PresetError("commands must be a non-empty list")
     norm_cmds = []
     for i, c in enumerate(commands):
-        if not isinstance(c, dict) or not isinstance(c.get("method"), str) or not c["method"]:
-            raise PresetError(f"commands[{i}].method is required")
+        if not isinstance(c, dict):
+            raise PresetError(f"commands[{i}] must be an object")
+        # 制御ステップ: {"wait": 秒} はクライアントに送らずサーバ側で待機する
+        if "wait" in c:
+            w = c["wait"]
+            if not isinstance(w, (int, float)) or isinstance(w, bool) or w < 0:
+                raise PresetError(f"commands[{i}].wait must be a non-negative number")
+            norm_cmds.append({"wait": float(w)})
+            continue
+        if not isinstance(c.get("method"), str) or not c["method"]:
+            raise PresetError(f"commands[{i}] needs 'method' (command) or 'wait' (control)")
         params = c.get("params")
         if params is not None and not isinstance(params, (dict, list)):
             raise PresetError(f"commands[{i}].params must be object/array/null")

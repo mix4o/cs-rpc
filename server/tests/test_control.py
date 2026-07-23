@@ -30,33 +30,44 @@ def _use_temp_presets(tmp_path):
 def test_presets_crud_and_run(tmp_path):
     web = _use_temp_presets(tmp_path)
     with TestClient(app) as client:
-        _disable_autorun(client)
+        # サーバ実行(autorun)で逐次実行を進める。echo は server 実行可能。
+        client.post("/control/autorun", json={"enabled": True})
         preset = {
-            "name": "demo-pwn",
-            "description": "壁紙変更→戻す",
+            "name": "demo",
+            "description": "echo → 待機 → echo",
             "commands": [
-                {"method": "wallpaper", "params": {"text": "PWNED (demo)"}},
-                {"method": "echo", "params": {"message": "done"}},
+                {"method": "echo", "params": {"message": "a"}},
+                {"wait": 0.1},  # 制御ステップ: クライアントに送らずサーバ側で待機
+                {"method": "echo", "params": {"message": "b"}},
             ],
         }
         assert client.post("/control/presets", json=preset).status_code == 200
-        # 一覧・1プリセット1ファイルで永続化されているか
-        names = [p["name"] for p in client.get("/control/presets").json()["presets"]]
-        assert "demo-pwn" in names
-        assert (tmp_path / "presets" / "demo-pwn.json").exists()
+        assert (tmp_path / "presets" / "demo.json").exists()
 
-        # 実行 → コマンド数ぶんキューに入る
-        r = client.post("/control/presets/run", json={"name": "demo-pwn"}).json()
-        assert r["enqueued"] == 2
-        pending = client.get("/control/state").json()["pending"]
-        assert [j["method"] for j in pending[-2:]] == ["wallpaper", "echo"]
-        # 後続テストを汚さないよう投入分を取り消す（共有 store のため）
-        for jid in r["ids"]:
-            client.post("/control/cancel", json={"id": jid})
+        r = client.post("/control/presets/run", json={"name": "demo"}).json()
+        assert r["started"] and r["commands"] == 2 and r["waits"] == 1
 
-        # 削除
-        assert client.post("/control/presets/delete", json={"name": "demo-pwn"}).status_code == 200
-        assert client.post("/control/presets/run", json={"name": "demo-pwn"}).status_code == 404
+        # 逐次実行の完了を待つ（履歴に demo 由来の 2 コマンドが入る）
+        got = 0
+        deadline = time.time() + 6
+        while time.time() < deadline:
+            hist = client.get("/control/state").json()["history"]
+            got = sum(1 for j in hist if j.get("source") == "preset:demo")
+            if got >= 2:
+                break
+            time.sleep(0.1)
+        assert got == 2
+
+        assert client.post("/control/presets/delete", json={"name": "demo"}).status_code == 200
+        assert client.post("/control/presets/run", json={"name": "demo"}).status_code == 404
+
+
+def test_preset_rejects_negative_wait(tmp_path):
+    _use_temp_presets(tmp_path)
+    with TestClient(app) as client:
+        r = client.post("/control/presets", json={
+            "name": "bad", "commands": [{"wait": -1}]})
+        assert r.status_code == 400
 
 
 def test_preset_validation_rejects_empty_commands(tmp_path):

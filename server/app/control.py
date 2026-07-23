@@ -173,6 +173,10 @@ class JobStore:
         """サーバ登録 + ワーカ申告のメソッド集合（enqueue 検証・一覧表示に使う）。"""
         return set(registry().keys()) | self._worker_methods
 
+    def get_job(self, job_id: str) -> Job | None:
+        """id からジョブを引く（プリセット逐次実行の完了待ちに使う）。"""
+        return self._jobs.get(job_id)
+
     def clear_history(self) -> None:
         self._history.clear()
 

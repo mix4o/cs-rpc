@@ -285,8 +285,21 @@ enqueue        lease            complete / cancel
 - **1プリセット = 1ファイル**。ディレクトリ（`CSRPC_PRESETS_DIR`、既定 `presets/`）配下に
   `<名前>.json` を置く。ファイルを直接並べるだけで準備でき（Web UI 不要）、UI からの保存も
   個別ファイルとして書き出す。サーバ起動時に読み込み、`/control/presets/reload` で再スキャン。
-- 1ファイルの構造: `{"name"?, "description"?, "commands": [{"method","params"}, ...]}`
+- 1ファイルの構造: `{"name"?, "description"?, "commands": [ ステップ, ... ]}`
   （`name` 省略時はファイル名がプリセット名）。
+- ステップは2種類:
+  - **コマンド** `{"method", "params"}` … クライアント（ワーカ）へ投入して実行。
+  - **制御** `{"wait": 秒}` … クライアントには送らず**サーバ側で待機**するだけ。
+- `run` は**サーバ側で逐次実行**する（HTTP はすぐ返り、以降はバックグラウンド進行）:
+  各コマンドは**完了を待って**次のステップへ進み、`wait` ではその秒数だけ待つ。
+  例（壁紙を変えて5秒後に戻す）:
+  ```json
+  {"commands": [
+    {"method": "wallpaper", "params": {"text": "PWNED (demo)"}},
+    {"wait": 5},
+    {"method": "wallpaper", "params": {"restore": true}}
+  ]}
+  ```
 
 ※スナップショット:
 ```json

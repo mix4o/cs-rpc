@@ -45,14 +45,16 @@ curl -s localhost:8080/rpc \
   再起動後も残る。`presets/<名前>.json` を直接置くだけでも準備でき（「再読込」で反映）、
   「＋現在のコマンドを追加」で入力中の method/params をプリセットに足せる。
 
-  例: `presets/demo-pwn.json`
+  例: `presets/demo-pwn.json`（`{"wait":秒}` はクライアントに送らずサーバ側で待機する制御ステップ）
   ```json
-  {"description": "壁紙を変えて戻す",
+  {"description": "壁紙を変えて5秒後に戻す",
    "commands": [
      {"method": "wallpaper", "params": {"text": "PWNED (demo)"}},
+     {"wait": 5},
      {"method": "wallpaper", "params": {"restore": true}}
    ]}
   ```
+  実行はサーバ側で逐次進行し、各コマンドは完了を待って次へ、`wait` はその秒数だけ待つ。
 
 ### 制御 API
 | メソッド | パス | 用途 |

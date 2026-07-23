@@ -14,6 +14,9 @@
 """
 from __future__ import annotations
 
+import asyncio
+import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -21,14 +24,42 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 
-from app.control import store
+from app.config import settings
+from app.control import JobState, store
 from app.dispatcher import dispatch, registry
 from app.presets import PresetError, presets
 from app.protocol import RpcException
 
+log = logging.getLogger("csrpc.web")
 router = APIRouter()
 
 _INDEX = Path(__file__).parent / "static" / "index.html"
+
+# 実行中のプリセット逐次実行タスク（GC 防止に参照を保持）
+_preset_tasks: set[asyncio.Task] = set()
+
+_TERMINAL = (JobState.DONE, JobState.ERROR, JobState.CANCELED)
+
+
+async def _await_terminal(job_id: str, timeout: float) -> None:
+    """ジョブが終端状態になるまで待つ（タイムアウトで諦めて次へ）。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        job = store.get_job(job_id)
+        if job is not None and job.state in _TERMINAL:
+            return
+        await asyncio.sleep(0.1)
+
+
+async def _run_preset_sequence(name: str, steps: list[dict]) -> None:
+    """プリセットを逐次実行する。command は投入→完了待ち、{wait} はサーバ側で待機。"""
+    for step in steps:
+        if "wait" in step:
+            await asyncio.sleep(min(float(step["wait"]), 3600.0))
+            continue
+        job = store.enqueue(step["method"], step.get("params"), source=f"preset:{name}")
+        await _await_terminal(job.id, settings.handler_timeout)
+    log.info("preset %s sequence finished", name)
 
 
 class EnqueueBody(BaseModel):
@@ -66,15 +97,12 @@ class AnnounceBody(BaseModel):
     methods: list[str] = []
 
 
-class PresetCommand(BaseModel):
-    method: str
-    params: dict | list | None = None
-
-
 class PresetBody(BaseModel):
     name: str
     description: str = ""
-    commands: list[PresetCommand]
+    # command ステップ {method, params} と制御ステップ {wait} を混在できるよう生 dict で受け、
+    # 実際の検証は presets._validate に委ねる。
+    commands: list[dict[str, Any]]
 
 
 class NameBody(BaseModel):
@@ -201,12 +229,20 @@ async def delete_preset(body: NameBody) -> dict:
 
 @router.post("/control/presets/run")
 async def run_preset(body: NameBody) -> dict:
-    """プリセットの全コマンドを順にキューへ投入する。"""
+    """プリセットを逐次実行する（command は投入、{wait} はサーバ側で待機）。
+
+    待機を含むため、実行はバックグラウンドで進め、HTTP はすぐ返す。
+    """
     preset = presets.get(body.name)
     if preset is None:
         raise HTTPException(status_code=404, detail="preset not found")
-    ids = []
-    for c in preset["commands"]:
-        job = store.enqueue(c["method"], c.get("params"), source=f"preset:{body.name}")
-        ids.append(job.id)
-    return {"preset": body.name, "enqueued": len(ids), "ids": ids}
+    steps = preset["commands"]
+    task = asyncio.create_task(_run_preset_sequence(body.name, steps))
+    _preset_tasks.add(task)
+    task.add_done_callback(_preset_tasks.discard)
+    return {
+        "preset": body.name,
+        "started": True,
+        "commands": sum(1 for s in steps if "method" in s),
+        "waits": sum(1 for s in steps if "wait" in s),
+    }
