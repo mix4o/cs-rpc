@@ -101,7 +101,7 @@
       <hr style="border:0;border-top:1px solid var(--line);margin:12px 0;">
       <label>プリセット名</label>
       <input id="presetName" spellcheck="false" placeholder="例: demo-pwn">
-      <label>コマンド列（JSON配列） <span class="muted">{"method","params"} または制御 {"wait":秒}</span></label>
+      <label>コマンド列 <span class="muted">配列 [...] か {"commands":[...]}。要素は {"method","params"} または {"wait":秒}</span></label>
       <textarea id="presetCmds" spellcheck="false" style="min-height:120px"
         placeholder='[{"method":"wallpaper","params":{"text":"PWNED (demo)"}},{"wait":5},{"method":"wallpaper","params":{"restore":true}}]'></textarea>
       <div class="hint">※ {"wait":秒} はクライアントに送らずサーバ側で待機する制御ステップ。各コマンドは完了を待って次へ進む。</div>
@@ -429,12 +429,25 @@ function editPreset(name) {
   note("presetMsg", `「${name}」を編集中`, false);
 }
 async function savePreset() {
-  const name = $("presetName").value.trim();
+  let parsed;
+  try { parsed = JSON.parse($("presetCmds").value); } catch (e) { return note("presetMsg", "コマンド列が不正な JSON です", true); }
+  // 配列（[...]）でも、ファイル形式（{"commands":[...], "name"?, "description"?}）でも受け付ける
+  let commands, description;
+  let name = $("presetName").value.trim();
+  if (Array.isArray(parsed)) {
+    commands = parsed;
+  } else if (parsed && Array.isArray(parsed.commands)) {
+    commands = parsed.commands;
+    if (!name && typeof parsed.name === "string") name = parsed.name.trim();
+    if (typeof parsed.description === "string") description = parsed.description;
+  } else {
+    return note("presetMsg", 'コマンド列は配列 [...] か {"commands":[...]} を入力してください', true);
+  }
   if (!name) return note("presetMsg", "プリセット名を入力してください", true);
-  let commands;
-  try { commands = JSON.parse($("presetCmds").value); } catch (e) { return note("presetMsg", "コマンド列が不正な JSON です", true); }
-  if (!Array.isArray(commands) || !commands.length) return note("presetMsg", "コマンド列は空でない配列にしてください", true);
-  const r = await api("/control/presets", { name, commands });
+  if (!commands.length) return note("presetMsg", "コマンド列は空でない配列にしてください", true);
+  const body = { name, commands };
+  if (description !== undefined) body.description = description;
+  const r = await api("/control/presets", body);
   if (!r.ok) { const d = await r.json().catch(() => ({})); return note("presetMsg", d.detail || "保存失敗", true); }
   note("presetMsg", `「${name}」を保存しました`, false);
   loadPresets();
