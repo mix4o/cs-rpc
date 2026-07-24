@@ -58,6 +58,29 @@ CSRPC_ENDPOINT=http://127.0.0.1:8080/rpc csrpc worker --name my-worker
 GUI に流れる。`sys.info` はワーカ機の OS/アーキ（`executedOn:"client"`）を返すので、
 「サーバが指示し、クライアントが実行した」ことが可視化できる。
 
+### タスクトレイ常駐（Windows）
+Windows では worker 起動時に **タスクトレイ（通知領域）へ格納**され、ウィンドウや
+ブラウザを開かずにバックグラウンドで動く（起動を知らせるバルーン通知が出る）。
+トレイアイコンを**右クリック**するとメニュー（「GUI を開く」/「終了」）、**左ダブル
+クリック**で GUI をブラウザ表示する。デモで「クライアントは常駐エージェントとして
+目立たず動いている」様子を見せられる。
+
+- 実装は CGO 不使用の pure syscall（`user32`/`shell32`）。既定ビルド（単一バイナリ・
+  クロスコンパイル可）のまま動く。追加依存なし。
+- 既定は Windows で ON、その他 OS では非対応のため OFF（`--tray` を付けても通常の
+  GUI 表示にフォールバックする）。環境変数 `CSRPC_TRAY=0/1` でも切替可能。
+- 通常のウィンドウ/ブラウザ表示に戻したい場合は `--tray=false`。
+
+```powershell
+# Windows: トレイ常駐で起動（既定）。GUI は開かず通知領域に入る
+$env:CSRPC_ENDPOINT = "http://192.168.1.180:8080/rpc"
+.\csrpc.exe worker --name win-pc
+# → 通知領域のアイコンを右クリック → 「GUI を開く」/「終了」
+
+# トレイに入れずウィンドウ/ブラウザで開く
+.\csrpc.exe worker --name win-pc --tray=false
+```
+
 ### ネイティブウィンドウ表示（`-tags webview`）
 研修用途で「サーバ（ブラウザのタブ）」と「クライアント（独立したデスクトップ
 ウィンドウ）」を一目で区別したい場合は、ネイティブウィンドウ版をビルドする。
@@ -99,6 +122,7 @@ CGO_ENABLED=1 go build -tags webview -o csrpc ./cmd/csrpc
 | `--poll` | `500ms` | lease のポーリング間隔 |
 | `--take-over` | `true` | 起動時にサーバ autorun を無効化 |
 | `--open` | `true` | 既定ブラウザで GUI を開く |
+| `--tray` | Windows は `true` / 他 OS は `false`（env `CSRPC_TRAY`） | 起動時にタスクトレイへ常駐（ウィンドウ/ブラウザは自動で開かない） |
 
 ローカル実行できるコマンド: `echo` / `math.add` / `math.div` / `sys.info` / `sys.time` /
 `demo.sleep`（running 状態を見せるデモ用）/ `find` / `exec`。追加は

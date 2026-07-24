@@ -73,8 +73,18 @@
 </header>
 
 <main>
-  <!-- 左: コマンド挿入 + プリセット -->
+  <!-- 左: 接続クライアント + コマンド挿入 + プリセット -->
   <section style="display:flex; flex-direction:column; gap:16px;">
+    <div class="panel">
+      <h2 style="display:flex; justify-content:space-between; align-items:center;">
+        接続クライアント <span class="muted" id="clientCount" style="font-size:11px"></span>
+      </h2>
+      <table>
+        <thead><tr><th></th><th>worker</th><th>methods</th><th>実行/完了</th><th>最終応答</th></tr></thead>
+        <tbody id="clientBody"></tbody>
+      </table>
+    </div>
+
     <div class="panel">
       <h2>次に実行するコマンドを挿入</h2>
       <label>method</label>
@@ -84,8 +94,10 @@
       <div class="hint" id="paramsHint"></div>
       <div class="row">
         <button id="enqueueBtn">キューに挿入 (enqueue)</button>
+        <button id="broadcastBtn">全クライアントへ配信 (broadcast)</button>
         <button id="runNowBtn" class="ghost">即時実行 (run now)</button>
       </div>
+      <div class="hint">enqueue=接続中のどれか1台が実行 ／ broadcast=接続中の全クライアントが各自実行（送信後すぐ次を送れる）</div>
       <div class="hint" id="runNowResult"></div>
     </div>
 
@@ -286,6 +298,17 @@ async function enqueue() {
   refresh();
 }
 
+async function broadcast() {
+  let params;
+  try { params = parseParams(); } catch (e) { return note("runNowResult", "params が不正な JSON です", true); }
+  const r = await api("/control/broadcast", { method: $("method").value, params });
+  if (!r.ok) { const d = await r.json().catch(()=>({})); return note("runNowResult", d.detail || "broadcast 失敗", true); }
+  const d = await r.json();
+  if (d.targets === 0) note("runNowResult", "接続中のクライアントがいません（0台へ配信）", true);
+  else note("runNowResult", `${d.targets}台へ配信: ${d.workers.join(", ")}`, false);
+  refresh();
+}
+
 async function runNow() {
   let params;
   try { params = parseParams(); } catch (e) { return note("runNowResult", "params が不正な JSON です", true); }
@@ -311,11 +334,47 @@ async function clearHistory() { await api("/control/clear"); refresh(); }
 
 function stateBadge(s) { return `<span class="badge s-${s}">${s}</span>`; }
 
+// 宛先ワーカ（broadcast で付く）を小さく表示。共有ジョブ（target なし）は何も出さない。
+function targetTag(j) {
+  return j.target
+    ? ` <span class="muted" style="font-size:11px" title="宛先ワーカ">→${esc(j.target)}</span>` : "";
+}
+
+function fmtIdle(ms) {
+  const s = Math.floor(ms / 1000);
+  if (s < 1) return "たった今";
+  if (s < 60) return `${s}秒前`;
+  const m = Math.floor(s / 60);
+  return m < 60 ? `${m}分前` : `${Math.floor(m / 60)}時間前`;
+}
+
+function renderClients(clients) {
+  const tb = $("clientBody");
+  const online = clients.filter(c => c.online).length;
+  $("clientCount").textContent = clients.length
+    ? `online ${online} / ${clients.length}` : "";
+  if (!clients.length) {
+    tb.innerHTML = `<tr><td colspan="5" class="empty">（未接続）</td></tr>`;
+    return;
+  }
+  tb.innerHTML = clients.map(c => {
+    const color = c.online ? "var(--ok)" : "var(--muted)";
+    const methods = c.methods && c.methods.length
+      ? esc(c.methods.join(", ")) : `<span class="muted">—</span>`;
+    return `<tr>
+      <td><span class="dot" style="background:${color}" title="${c.online ? "online" : "offline"}"></span></td>
+      <td><code>${esc(c.name)}</code></td>
+      <td class="muted" style="font-size:12px">${methods}</td>
+      <td>${c.leased} / ${c.completed}</td>
+      <td class="muted">${fmtIdle(c.idle_ms)}</td></tr>`;
+  }).join("");
+}
+
 function renderQueue(pending) {
   const tb = $("queueBody");
   if (pending.length === 0) { tb.innerHTML = `<tr><td colspan="5" class="empty">（空）</td></tr>`; return; }
   tb.innerHTML = pending.map(j => `
-    <tr><td>${j.seq}</td><td><code>${esc(j.method)}</code></td>
+    <tr><td>${j.seq}</td><td><code>${esc(j.method)}</code>${targetTag(j)}</td>
     <td><code>${esc(short(j.params) ?? "")}</code></td>
     <td>${stateBadge(j.state)}</td>
     <td><button class="ghost small" onclick="cancel('${j.id}')">cancel</button></td></tr>`).join("");
@@ -360,7 +419,7 @@ function histRow(j) {
       + `<button class="ghost small" onclick="showDetail('${j.id}')">詳細</button></div>`;
   }
   const cls = "rbox" + (expandedIds.has(j.id) ? " expanded" : "");
-  return `<tr><td>${j.seq}</td><td><code>${esc(j.method)}</code></td>
+  return `<tr><td>${j.seq}</td><td><code>${esc(j.method)}</code>${targetTag(j)}</td>
     <td>${stateBadge(j.state)} ${action}</td>
     <td><div class="${cls}" id="rbox-${j.id}" data-id="${j.id}"><pre>${detail}</pre></div>${rowbtns}</td>
     <td class="muted">${esc(j.worker || j.source || "")}</td></tr>`;
@@ -483,11 +542,13 @@ async function refresh() {
   jobsById = {};
   for (const j of [...s.pending, ...s.running, ...s.history]) jobsById[j.id] = j;
   for (const id of expandedIds) if (!(id in jobsById)) expandedIds.delete(id);
+  renderClients(s.clients || []);
   renderQueue(s.pending);
   renderHistory(s.running, s.history);
 }
 
 $("enqueueBtn").onclick = enqueue;
+$("broadcastBtn").onclick = broadcast;
 $("runNowBtn").onclick = runNow;
 $("autorunBtn").onclick = toggleAutorun;
 $("stepBtn").onclick = step;

@@ -2,14 +2,18 @@
 
 - GET  /               コントロールページ（HTML）
 - GET  /control/state  キュー・実行中・履歴・autorun 状態の JSON（ページがポーリング）
-- POST /control/enqueue  次に実行するコマンドを挿入
+- POST /control/enqueue  次に実行するコマンドを挿入（1台が取る共有ジョブ）
+- POST /control/broadcast 接続中の全クライアントへ同じ命令を配信（クライアント数だけ複製）
 - POST /control/run-now  キューを介さず即時実行して結果を返す
 - POST /control/step     queued を1件サーバ実行
 - POST /control/autorun  サーバ自動実行の ON/OFF
 - POST /control/cancel   queued ジョブのキャンセル
 - POST /control/clear    履歴クリア
+- GET  /control/clients  接続中クライアント（ワーカ）一覧
 - 外部ワーカ用:
-  - POST /control/lease     次の queued を lease（無ければ 204）
+  - POST /control/announce  接続申告（クライアント登録 + 実行可能メソッド申告）
+  - POST /control/lease     次の queued を lease（無ければ 204。ポーリングが heartbeat）
+  - POST /control/progress  途中経過報告（heartbeat 兼）
   - POST /control/complete  lease したジョブの結果を報告
 """
 from __future__ import annotations
@@ -66,6 +70,13 @@ class EnqueueBody(BaseModel):
     method: str
     params: dict | list | None = None
     source: str = "web"
+
+
+class BroadcastBody(BaseModel):
+    method: str
+    params: dict | list | None = None
+    source: str = "broadcast"
+    online_only: bool = True   # False にすると offline のクライアント宛にも積む
 
 
 class AutorunBody(BaseModel):
@@ -126,6 +137,28 @@ async def enqueue(body: EnqueueBody) -> dict:
         raise HTTPException(status_code=400, detail=f"unknown method: {body.method}")
     job = store.enqueue(body.method, body.params, source=body.source)
     return job.to_dict()
+
+
+@router.post("/control/broadcast")
+async def broadcast(body: BroadcastBody) -> dict:
+    """接続中の全クライアントへ同じ命令を配信（各クライアント宛に1つずつ複製投入）。
+
+    呼び出し時点のクライアント一覧に対して積んで即座に返す（ファイア・アンド・
+    フォーゲット）。誰が受け取るか・受け取ったかに関係なく、続けて次の命令を
+    送れる。0台でも 200 を返す（targets:0）。
+    """
+    if body.method not in store.known_methods():
+        raise HTTPException(status_code=400, detail=f"unknown method: {body.method}")
+    jobs = store.broadcast(body.method, body.params, source=body.source,
+                           online_only=body.online_only)
+    group = jobs[0].group if jobs else None
+    return {
+        "broadcast": True,
+        "group": group,
+        "targets": len(jobs),
+        "workers": [j.target for j in jobs],
+        "ids": [j.id for j in jobs],
+    }
 
 
 @router.post("/control/run-now")
@@ -195,9 +228,15 @@ async def progress(body: ProgressBody) -> dict:
 
 @router.post("/control/announce")
 async def announce(body: AnnounceBody) -> dict:
-    """ワーカが実行可能メソッドを申告（コントロールページの選択肢に反映）。"""
-    store.announce_methods(body.methods)
-    return {"known": sorted(store.known_methods())}
+    """ワーカが接続を申告（クライアント登録 + 実行可能メソッドを選択肢に反映）。"""
+    store.announce(body.worker, body.methods)
+    return {"known": sorted(store.known_methods()), "clients": store.clients()}
+
+
+@router.get("/control/clients")
+async def clients() -> dict:
+    """接続中クライアント（ワーカ）一覧。online は heartbeat の鮮度から算出。"""
+    return {"clients": store.clients(), "timeout": settings.client_timeout}
 
 
 # --- プリセット（複数コマンドをまとめて登録・一括投入） ---
