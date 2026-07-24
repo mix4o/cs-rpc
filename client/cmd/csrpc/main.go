@@ -236,7 +236,7 @@ Usage:
   csrpc call <method> [--param k=v ...] [--params-json '{...}'] [--idempotent]
   csrpc ping
   csrpc methods
-  csrpc worker [--gui 127.0.0.1:8787] [--name NAME] [--poll 500ms] [--no-open]
+  csrpc worker [--gui 127.0.0.1:8787] [--name NAME] [--poll 500ms] [--tray] [--open=false]
 
 Common flags:
   --endpoint URL     (env CSRPC_ENDPOINT, default http://127.0.0.1:8080/rpc)

@@ -255,6 +255,8 @@ enqueue        lease            complete / cancel
   "params": { "path": "/etc", "name": "*.conf" },
   "state": "running",              // queued|running|done|error|canceled
   "source": "web", "worker": "PC07",
+  "target": null,                  // 宛先ワーカ。null=共有(誰でも可) / 名前=そのワーカ専用(broadcast)
+  "group": null,                   // 同一ブロードキャストを束ねる id（単発は null）
   "progress": { "scanned": 8000, "matched": 12 },   // 実行中のみ
   "result": null, "error": null,
   "created_at": 1700000000.0, "updated_at": 1700000001.2
@@ -266,8 +268,10 @@ enqueue        lease            complete / cancel
 | メソッド | パス | ボディ | 応答 | 用途 |
 | --- | --- | --- | --- | --- |
 | GET | `/` | ― | HTML | コントロールページ |
-| GET | `/control/state` | ― | スナップショット※ | キュー/実行中/履歴/autorun を取得（ページが約1秒間隔でポーリング） |
-| POST | `/control/enqueue` | `{method, params?, source?}` | ジョブ | 「次に実行するコマンド」を積む。`method` は既知（サーバ登録∪ワーカ申告）でないと 400 |
+| GET | `/control/state` | ― | スナップショット※ | キュー/実行中/履歴/autorun/**接続クライアント**を取得（ページが約1秒間隔でポーリング） |
+| GET | `/control/clients` | ― | `{clients:[...], timeout}` | 接続中クライアント（ワーカ）一覧。`online` は heartbeat の鮮度から算出 |
+| POST | `/control/enqueue` | `{method, params?, source?}` | ジョブ | 「次に実行するコマンド」を積む（**接続中のどれか1台**が取る共有ジョブ）。`method` は既知（サーバ登録∪ワーカ申告）でないと 400 |
+| POST | `/control/broadcast` | `{method, params?, source?, online_only?}` | `{group, targets, workers, ids}` | **接続中の全クライアントへ同じ命令を配信**（クライアント数だけ複製）。送信後すぐ次を送れる（ファイア・アンド・フォーゲット） |
 | POST | `/control/run-now` | `{method, params?}` | `{ok, result}` / `{ok:false, error}` | **サーバ上で即時実行**（サーバ登録メソッドのみ） |
 | POST | `/control/step` | ― | ジョブ / 204 | queued を1件**サーバ上で**実行 |
 | POST | `/control/autorun` | `{enabled: bool}` | `{autorun}` | サーバ自動実行の ON/OFF |
@@ -305,6 +309,8 @@ enqueue        lease            complete / cancel
 ```json
 { "autorun": false, "tick": 0.7,
   "methods": ["echo","find","math.add", "..."],   // サーバ登録∪ワーカ申告
+  "clients": [ /* 接続クライアント（下記） */ ],
+  "client_timeout": 30.0,
   "pending": [ /* queued ジョブ */ ],
   "running": [ /* running ジョブ */ ],
   "history": [ /* done/error/canceled（新しい順） */ ] }
@@ -314,10 +320,82 @@ enqueue        lease            complete / cancel
 
 | メソッド | パス | ボディ | 応答 | 用途 |
 | --- | --- | --- | --- | --- |
-| POST | `/control/announce` | `{worker, methods:[...]}` | `{known:[...]}` | 起動時、自分が実行できるメソッドを申告（選択肢に反映） |
-| POST | `/control/lease` | `{worker}` | ジョブ / **204** | 次の queued を取得（running にする）。無ければ 204 |
-| POST | `/control/progress` | `{id, progress}` | `{cancel: bool}` | 途中経過を報告。**応答の `cancel` が中断要求** |
+| POST | `/control/announce` | `{worker, methods:[...]}` | `{known:[...], clients:[...]}` | 起動時、自分が実行できるメソッドを申告（選択肢に反映）。`worker` でクライアント登録 |
+| POST | `/control/lease` | `{worker}` | ジョブ / **204** | 「宛先なし or 自分宛」の先頭 queued を取得（running にする）。無ければ 204。**ポーリング自体が heartbeat** |
+| POST | `/control/progress` | `{id, progress}` | `{cancel: bool}` | 途中経過を報告（heartbeat 兼）。**応答の `cancel` が中断要求** |
 | POST | `/control/complete` | `{id, result?, error?, canceled?}` | ジョブ | 完了報告。`canceled:true` で中断完了 |
+
+---
+
+### 3.3 接続クライアント（ワーカ）の管理
+
+複数の外部ワーカが**同時に**サーバへ接続し、それぞれ別のジョブを引き取って実行できる。
+HTTP はステートレスなので「接続」の実体は無く、サーバは各ワーカの呼び出しを
+**heartbeat** として扱ってクライアント表を保つ。
+
+- **キー**は `worker` 名（`announce`/`lease`/`progress`/`complete` で送る文字列）。
+  同名は同一クライアントとみなされる（複数台なら別名を付ける）。
+- 次のいずれかを受けるたび `last_seen` を更新する: `announce` / `lease`（ジョブが無い
+  204 の空ポーリングも含む）/ `progress` / `complete`。**ワーカは lease を定期的に
+  ポーリングするだけで online を維持できる**。
+- `announce` は実行可能メソッドの申告も兼ねる（`methods` はコントロールページの
+  選択肢＝既知メソッド集合に反映される）。
+- `last_seen` からの経過が `client_timeout`（環境変数 `CSRPC_CLIENT_TIMEOUT`、既定
+  30秒）を超えたクライアントは `online:false`（offline）として表示される。
+- サーバ自身の実行（`step`/autorun）はクライアントとして登録されない。
+
+クライアントオブジェクト（`/control/clients` と snapshot の `clients` に現れる形）:
+```json
+{
+  "name": "PC07",
+  "methods": ["echo", "find"],       // announce で申告（ソート済み）
+  "first_seen": 1700000000.0,
+  "last_seen": 1700000005.2,
+  "leased": 1,                        // 現在 lease 中（未 complete）のジョブ数
+  "completed": 12,                    // complete 報告した累計
+  "last_job": "ab12cd34",             // 直近に lease したジョブ id
+  "last_method": "find",              // 直近に lease したメソッド
+  "online": true,                     // last_seen が client_timeout 以内か
+  "idle_ms": 300                      // 最終 heartbeat からの経過（ミリ秒）
+}
+```
+
+コントロールページは接続クライアント一覧（online/offline のドット・申告メソッド・
+実行中/完了数・最終応答）を表示し、複数ワーカの並行接続をひと目で確認できる。
+
+> **プロセス内共有**: クライアント表はジョブキューと同じくメモリ上の単一インスタンス
+> （プロセス内共有）で持つ。したがって FastAPI/Uvicorn は**単一ワーカプロセス**で
+> 起動すること（`--workers 1`。既定）。プロセスを増やすとキュー・クライアント表が
+> プロセスごとに分断される。水平スケールが要るなら Redis 等の共有ストアに載せ替える。
+
+### 3.4 2つの配信モデル（共有ジョブ / ブロードキャスト）
+
+同じキューを2通りに使い分ける。鍵はジョブの **`target`（宛先ワーカ名）**:
+
+| 投入 API | `target` | 誰が実行するか |
+| --- | --- | --- |
+| `/control/enqueue` | `null`（宛先なし） | **接続中のどれか1台**（最初に lease したワーカが総取り＝負荷分散） |
+| `/control/broadcast` | 各クライアント名 | **接続中の全クライアントが各自実行**（クライアント数だけジョブを複製） |
+
+- **lease は宛先を尊重する**: `/control/lease {worker}` は「**宛先なし** または **自分宛**」の
+  先頭ジョブだけを取る。他ワーカ宛のジョブは見えない（横取りしない）。
+- **ブロードキャスト = 呼び出し時点のスナップショットへのファンアウト**: `broadcast` は
+  その瞬間の接続クライアント一覧に対して1件ずつ複製投入し、**即座に返す**。
+  誰が受け取ったか・受け取ったかに関係なく、**続けて次の命令を送れる**（各ワーカの
+  キューに順番に積まれ、ワーカは自分宛を順に消化する）。
+  - 同一ブロードキャストのジョブは共通の `group` id を持つ（UI でまとめて識別可能）。
+  - `online_only`（既定 `true`）: heartbeat が生きているワーカだけを対象にする。
+    `false` なら offline のクライアント宛にも積む（復帰後に受け取る）。
+  - **配信後に接続した**クライアントは、その回のブロードキャスト対象外（次回から対象）。
+  - 0台でも 200（`targets:0`）。宛先ジョブが不要になったら通常の `/control/cancel {id}` で除去。
+
+```
+             /control/enqueue (target=null)         /control/broadcast (各ワーカ宛に複製)
+                    │                                        │
+                    ▼                                        ├─ target=PC-A ─▶ PC-A が lease
+   [ 共有キュー ] ── どれか1台が総取り                       ├─ target=PC-B ─▶ PC-B が lease
+                                                             └─ target=PC-C ─▶ PC-C が lease
+```
 
 ---
 

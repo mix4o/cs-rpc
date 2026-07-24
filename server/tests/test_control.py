@@ -126,6 +126,167 @@ def test_announce_enables_worker_method_and_progress_cancel():
         assert done["state"] == "canceled"
 
 
+def _reset_clients():
+    """クライアントレジストリを空にする（store はシングルトンで状態が持ち越すため）。"""
+    from app.control import store
+    store._clients.clear()
+
+
+def test_announce_registers_client():
+    _reset_clients()
+    with TestClient(app) as client:
+        r = client.post("/control/announce",
+                        json={"worker": "PC07", "methods": ["find", "echo"]})
+        assert r.status_code == 200
+        assert "PC07" in {c["name"] for c in r.json()["clients"]}
+
+        clients = client.get("/control/clients").json()["clients"]
+        pc07 = next(c for c in clients if c["name"] == "PC07")
+        assert pc07["online"] is True
+        assert pc07["methods"] == ["echo", "find"]   # sorted
+        assert pc07["leased"] == 0 and pc07["completed"] == 0
+        # スナップショットにも載る
+        assert any(c["name"] == "PC07"
+                   for c in client.get("/control/state").json()["clients"])
+
+
+def test_multiple_clients_tracked_independently():
+    _reset_clients()
+    with TestClient(app) as client:
+        _disable_autorun(client)
+        client.post("/control/announce", json={"worker": "A", "methods": ["find"]})
+        client.post("/control/announce", json={"worker": "B", "methods": ["echo"]})
+        names = {c["name"] for c in client.get("/control/clients").json()["clients"]}
+        assert {"A", "B"} <= names
+
+
+def test_lease_poll_is_heartbeat_even_without_job():
+    _reset_clients()
+    with TestClient(app) as client:
+        _disable_autorun(client)
+        # キューは空だが lease をポーリングしただけで接続クライアントとして現れる
+        assert client.post("/control/lease", json={"worker": "idle-w"}).status_code == 204
+        clients = client.get("/control/clients").json()["clients"]
+        assert any(c["name"] == "idle-w" and c["online"] for c in clients)
+
+
+def test_lease_complete_updates_client_counts():
+    _reset_clients()
+    with TestClient(app) as client:
+        _disable_autorun(client)
+        jid = client.post("/control/enqueue", json={"method": "sys.time"}).json()["id"]
+        client.post("/control/lease", json={"worker": "W1"})
+        # lease 中は leased=1
+        w = next(c for c in client.get("/control/clients").json()["clients"]
+                 if c["name"] == "W1")
+        assert w["leased"] == 1 and w["last_method"] == "sys.time"
+        # complete で leased=0, completed=1
+        client.post("/control/complete", json={"id": jid, "result": {"epoch": 1.0}})
+        w = next(c for c in client.get("/control/clients").json()["clients"]
+                 if c["name"] == "W1")
+        assert w["leased"] == 0 and w["completed"] == 1
+
+
+def test_client_goes_offline_after_timeout():
+    _reset_clients()
+    from app.control import store
+    original = store._client_timeout
+    store._client_timeout = 0.15
+    try:
+        with TestClient(app) as client:
+            client.post("/control/announce", json={"worker": "flaky", "methods": []})
+            assert next(c for c in client.get("/control/clients").json()["clients"]
+                        if c["name"] == "flaky")["online"] is True
+            time.sleep(0.25)  # heartbeat を送らずタイムアウトを超える
+            assert next(c for c in client.get("/control/clients").json()["clients"]
+                        if c["name"] == "flaky")["online"] is False
+    finally:
+        store._client_timeout = original
+
+
+def test_server_internal_execution_is_not_a_client():
+    _reset_clients()
+    with TestClient(app) as client:
+        _disable_autorun(client)
+        client.post("/control/enqueue", json={"method": "echo", "params": {"message": "x"}})
+        client.post("/control/step")   # サーバ側で実行（server-step）
+        names = {c["name"] for c in client.get("/control/clients").json()["clients"]}
+        assert "server-step" not in names and "server-autorun" not in names
+
+
+def test_broadcast_fans_out_to_each_connected_client():
+    _reset_clients()
+    with TestClient(app) as client:
+        _disable_autorun(client)
+        client.post("/control/announce", json={"worker": "A", "methods": ["echo"]})
+        client.post("/control/announce", json={"worker": "B", "methods": ["echo"]})
+
+        r = client.post("/control/broadcast",
+                        json={"method": "echo", "params": {"message": "hi"}})
+        d = r.json()
+        assert d["targets"] == 2
+        assert set(d["workers"]) == {"A", "B"}
+        assert d["group"] is not None
+
+        # 各ワーカは「自分宛」のジョブだけを lease する
+        ja = client.post("/control/lease", json={"worker": "A"}).json()
+        jb = client.post("/control/lease", json={"worker": "B"}).json()
+        assert ja["target"] == "A" and jb["target"] == "B"
+        assert ja["id"] != jb["id"] and ja["group"] == jb["group"]
+        # 各ワーカの2回目 lease はもう自分宛が無いので 204
+        assert client.post("/control/lease", json={"worker": "A"}).status_code == 204
+
+
+def test_broadcast_is_non_blocking_send_next_immediately():
+    _reset_clients()
+    with TestClient(app) as client:
+        _disable_autorun(client)
+        client.post("/control/announce", json={"worker": "A", "methods": ["echo"]})
+        # 1台も lease していなくても、続けて次のブロードキャストを送れる
+        r1 = client.post("/control/broadcast", json={"method": "echo", "params": {"n": 1}})
+        r2 = client.post("/control/broadcast", json={"method": "echo", "params": {"n": 2}})
+        assert r1.status_code == 200 and r2.status_code == 200
+        assert r1.json()["group"] != r2.json()["group"]
+        # A 宛に2件が順番に積まれている
+        pending = client.get("/control/state").json()["pending"]
+        a_jobs = [p for p in pending if p["target"] == "A"]
+        assert len(a_jobs) == 2
+        assert a_jobs[0]["params"] == {"n": 1} and a_jobs[1]["params"] == {"n": 2}
+
+
+def test_broadcast_with_no_clients_returns_zero():
+    _reset_clients()
+    with TestClient(app) as client:
+        r = client.post("/control/broadcast", json={"method": "echo", "params": {}})
+        d = r.json()
+        assert d["targets"] == 0 and d["ids"] == []
+
+
+def test_targeted_job_not_taken_by_other_worker():
+    _reset_clients()
+    with TestClient(app) as client:
+        _disable_autorun(client)
+        client.post("/control/announce", json={"worker": "A", "methods": ["echo"]})
+        client.post("/control/announce", json={"worker": "B", "methods": ["echo"]})
+        client.post("/control/broadcast", json={"method": "echo", "params": {"m": "x"}})
+        # B は「A宛」ジョブを取れず、自分宛だけを取る
+        first = client.post("/control/lease", json={"worker": "B"}).json()
+        assert first["target"] == "B"
+
+
+def test_broadcast_does_not_block_shared_enqueue():
+    _reset_clients()
+    with TestClient(app) as client:
+        _disable_autorun(client)
+        client.post("/control/announce", json={"worker": "A", "methods": ["echo"]})
+        client.post("/control/broadcast", json={"method": "echo", "params": {"b": 1}})
+        # 宛先なしの共有ジョブは誰でも取れる（別ワーカ C でも取得可能）
+        shared = client.post("/control/enqueue",
+                             json={"method": "echo", "params": {"s": 1}}).json()
+        leased = client.post("/control/lease", json={"worker": "C"}).json()
+        assert leased["id"] == shared["id"] and leased["target"] is None
+
+
 def test_run_now_ok():
     with TestClient(app) as client:
         r = client.post("/control/run-now",

@@ -60,3 +60,14 @@ func envDurOr(key string, def time.Duration) time.Duration {
 	}
 	return def
 }
+
+func envBoolOr(key string, def bool) bool {
+	switch strings.ToLower(os.Getenv(key)) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return def
+	}
+}

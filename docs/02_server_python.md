@@ -211,6 +211,7 @@ async def authenticate(request) -> None:
 | ボディ上限 | `CSRPC_MAX_BODY` | `10485760`（10MB） |
 | ログレベル | `CSRPC_LOG_LEVEL` | `INFO` |
 | ワーカ数 | `CSRPC_WORKERS` | `1` |
+| クライアント offline 判定 | `CSRPC_CLIENT_TIMEOUT` | `30`（秒。この間 heartbeat が無いワーカを offline 表示） |
 
 - 既定は `127.0.0.1` バインド（ローカル/信頼環境前提）。外部公開時は
   リバースプロキシ（TLS 終端）越しにする想定。

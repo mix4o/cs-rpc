@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"time"
 
 	"csrpc/internal/gui"
@@ -26,16 +27,20 @@ func cmdWorker(args []string) int {
 	common := registerCommon(fs)
 	var guiAddr, name string
 	var poll time.Duration
-	var takeOver, open bool
+	var takeOver, open, tray bool
 	defaultName, _ := os.Hostname()
 	if defaultName == "" {
 		defaultName = "worker"
 	}
+	// タスクトレイ常駐は Windows のみ対応。既定は Windows で ON（起動時にトレイへ格納）、
+	// 他 OS では OFF（runTray が非対応で false を返し GUI 表示にフォールバックする）。
+	defaultTray := envBoolOr("CSRPC_TRAY", runtime.GOOS == "windows")
 	fs.StringVar(&guiAddr, "gui", "127.0.0.1:8787", "GUI listen address (empty to disable GUI)")
 	fs.StringVar(&name, "name", defaultName, "worker name reported to the server")
 	fs.DurationVar(&poll, "poll", 500*time.Millisecond, "lease poll interval")
 	fs.BoolVar(&takeOver, "take-over", true, "disable server autorun so this worker executes commands")
 	fs.BoolVar(&open, "open", true, "(browser build) open the GUI in the default browser")
+	fs.BoolVar(&tray, "tray", defaultTray, "(Windows) run in the system tray on startup instead of opening a window")
 	if err := fs.Parse(args); err != nil {
 		return exitTransport
 	}
@@ -81,12 +86,21 @@ func cmdWorker(args []string) int {
 		return exitOK
 	}
 
-	// GUI 有効: ワーカは別 goroutine、GUI をメイン goroutine で表示。
+	// GUI 有効: ワーカは別 goroutine、GUI/トレイをメイン goroutine で保持。
 	runCtx, cancel := context.WithCancel(ctx)
 	go w.Run(runCtx)
 
 	cfg := guiConfig{Title: fmt.Sprintf("cs-rpc CLIENT — worker: %s", name), URL: url, Open: open}
-	presentGUI(runCtx, cancel, cfg) // ウィンドウが閉じる / Ctrl-C までブロック
+	// --tray（Windows 既定 ON）: ウィンドウ/ブラウザを出さずトレイへ常駐する。
+	// トレイ非対応の OS では runTray が false を返すので通常の GUI 表示に戻す。
+	if tray && runTray(runCtx, cancel, cfg) {
+		// runTray がトレイ常駐でフォアグラウンドを保持した（終了までブロック済み）。
+	} else {
+		if tray {
+			hub.Logf("warn", "system tray not supported on this OS; showing GUI instead")
+		}
+		presentGUI(runCtx, cancel, cfg) // ウィンドウが閉じる / Ctrl-C までブロック
+	}
 	cancel()
 
 	shutCtx, c := context.WithTimeout(context.Background(), 2*time.Second)
